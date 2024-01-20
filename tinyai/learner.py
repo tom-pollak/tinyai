@@ -7,7 +7,7 @@ import torch
 from torch import optim
 from torch.optim import lr_scheduler
 
-from tinyai.core import MODEL_DIR, cls_name
+from tinyai.core import MODEL_DIR, cls_name, def_device
 from tinyai.cbs import CancelBatchException, CancelEpochException, CancelFitException
 from tinyai.cbs import *
 from tinyai.hooks import Hooks
@@ -202,7 +202,7 @@ class Learner:
 class Trainer(Learner):
     default_cbs = [
         DeviceCB(),
-        TrainCB(n_inp=1),
+        AccelerateCB(n_inp=1) if def_device == 'cuda' else TrainCB(n_inp=1),
         ProgressCB(),
         PlotLossCB(),
     ]
