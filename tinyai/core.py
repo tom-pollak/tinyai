@@ -40,7 +40,7 @@ def list_models():
 ## UTILS
 
 
-def identity(x):
+def identity(*x):
     return x
 
 

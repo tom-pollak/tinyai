@@ -63,12 +63,12 @@ def get_grid(
 ):  # fig and axs
     "Return a grid of `n` axes, `rows` by `cols`"
     if nrows:
-        ncols = ncols or int(np.floor(n / nrows))
+        ncols = ncols or int(math.ceil(n / nrows))
     elif ncols:
-        nrows = nrows or int(np.ceil(n / ncols))
+        nrows = nrows or int(math.ceil(n / ncols))
     else:
-        nrows = int(math.sqrt(n))
-        ncols = int(np.floor(n / nrows))
+        nrows = int(math.ceil(math.sqrt(n)))
+        ncols = nrows
     fig, axs = subplots(nrows, ncols, **kwargs)
     for i in range(n, nrows * ncols):
         axs.flat[i].set_axis_off()

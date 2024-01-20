@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from fastprogress import progress_bar, master_bar
 
 import torch
+from torch import Tensor
 from torch import nn
 from torch.optim.lr_scheduler import ExponentialLR
 from torch.utils.data import default_collate
@@ -47,7 +48,7 @@ __all__ = [
     "HooksCallback",
     "ActivationStats",
     "AccelerateCB",
-    "MultDL"
+    "MultDL",
 ]
 
 
@@ -136,6 +137,7 @@ class TrainCB(BaseTrainCB):
 class MetricsCB(Callback):
     order = 1
     show_train = True
+    sigmoid = False
     required_cbs = [BaseTrainCB]
 
     def __init__(self, *ms, **metrics):
@@ -155,6 +157,9 @@ class MetricsCB(Callback):
 
     def after_batch(self, learn):
         x, y, *_ = to_cpu(learn.batch)
+        if self.sigmoid:
+            x = x.sigmoid()
+
         for m in self.metrics.values():
             m.update(to_cpu(learn.preds), y)
 
@@ -165,9 +170,29 @@ class MetricsCB(Callback):
                 train="train" if learn.model.training else "eval",
                 loss=f"{learn.epoch_loss.compute().item():.4f}",
             )
-            log.update(
-                {k: f"{v.compute().item():.4f}" for k, v in self.metrics.items()}
-            )
+            for k, v in self.metrics.items():
+                metric = v.compute()
+                if isinstance(metric, Tensor):
+                    if metric.numel() == 1:
+                        log.update({k: f"{metric.item():.4f}"})
+                    elif metric.ndim == 1:
+                        log.update(
+                            {
+                                f"{k}_{i}": f"{o.item():.4f}"
+                                for i, o in enumerate(metric)
+                            }
+                        )
+                    else:
+                        raise ValueError(f"{metric.shape} is not compatiable")
+                elif isinstance(metric, tuple):  # multi output, (tensor, tensor)
+                    log.update(
+                        {
+                            f"{k}": ";".join(f"{o.item():.4f}" for o in ms)
+                            for ms in zip(*metric)
+                        }
+                    )
+                else:
+                    raise ValueError(f"{metric} is not compatiable")
             self._log(log)
 
 
@@ -317,7 +342,7 @@ class NBatchCB(Callback):
 class OverfitBatch(Callback):
     order = 3
 
-    def __init__(self, eval_steps=float("inf"), nbatches=1):
+    def __init__(self, nbatches=1, eval_steps=1):
         self.eval_nsteps = eval_steps
         self.nbatches = nbatches
 
@@ -326,7 +351,7 @@ class OverfitBatch(Callback):
         if learn.training and learn.iter + 1 >= self.nbatches:
             raise CancelEpochException()
 
-    def before_batch(self, learn):
+    def before_epoch(self, learn):
         # if validating, and not eval epoch, cancel validation
         if not learn.training and learn.train_steps % self.eval_nsteps != 0:
             raise CancelEpochException()
@@ -434,7 +459,7 @@ class RecorderCB(Callback):
 ##
 class HooksCallback(Callback):
     def __init__(
-        self, hookfunc, mod_filter=identity, on_train=True, on_valid=False, mods=None
+        self, hookfunc, mod_filter=None, on_train=True, on_valid=False, mods=None
     ):
         self.hookfunc, self.mod_filter, self.on_train, self.on_valid, self.mods = (
             hookfunc,
@@ -449,7 +474,9 @@ class HooksCallback(Callback):
         if self.mods:
             mods = self.mods
         else:
-            mods = filter(self.mod_filter, get_children(learn.model))
+            mods = get_children(learn.model)
+            if self.mod_filter:
+                mods = filter(self.mod_filter, mods)
         self.hooks = Hooks(mods, partial(self._hookfunc, learn))
 
     def _hookfunc(self, learn, *args, **kwargs):
