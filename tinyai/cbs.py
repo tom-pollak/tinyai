@@ -48,7 +48,6 @@ __all__ = [
     "HooksCallback",
     "ActivationStats",
     "AccelerateCB",
-    "MultDL",
 ]
 
 
@@ -84,6 +83,13 @@ def require_cbs(cbs, required_cbs):
         raise ValueError(f"Required callback {required_cbs}")
 
 
+def no_callbacks(cbs, no_cbs):
+    for cb in cbs:
+        for nocb in no_cbs:
+            if isinstance(cb, nocb):
+                raise ValueError(f"Callback {nocb} not allowed")
+
+
 class Callback:
     order = 0
 
@@ -100,7 +106,7 @@ class DeviceCB(Callback):
 
 
 class BaseTrainCB(Callback):
-    order = 0
+    order = 10
 
     ## Running mean of epoch loss
     def before_fit(self, learn):
@@ -135,12 +141,11 @@ class TrainCB(BaseTrainCB):
 
 
 class MetricsCB(Callback):
-    order = 1
-    show_train = True
+    order = 50
     sigmoid = False
     required_cbs = [BaseTrainCB]
 
-    def __init__(self, *ms, **metrics):
+    def __init__(self, *ms, plot=False, **metrics):
         for o in ms:
             metrics[cls_name(o)] = o
         self.metrics = metrics
@@ -197,7 +202,7 @@ class MetricsCB(Callback):
 
 
 class ProgressCB(Callback):
-    order = 2
+    order = MetricsCB.order + 1
 
     def before_fit(self, learn):
         learn.epochs = self.mbar = master_bar(learn.epochs)
@@ -219,7 +224,7 @@ class ProgressCB(Callback):
 
 
 class PlotCB(Callback):
-    order = 3
+    order = ProgressCB.order + 1
 
     def __init__(self):
         super().__init__()
@@ -241,6 +246,8 @@ class PlotCB(Callback):
 
 
 class PlotLossCB(PlotCB):
+    show_train = True
+
     def __init__(self):
         super().__init__()
         self.required_cbs = [BaseTrainCB, ProgressCB]
@@ -300,7 +307,7 @@ class PlotMetricsCB(PlotCB):
 # TODO: add option to save best model
 # TODO: with early stopping enabled last epoch is not printed
 class EarlyStoppingCB(MetricsCB):
-    order = 3
+    order = 100
 
     def __init__(self, patience=1, metric=None):
         "metric = None uses val loss"
@@ -332,7 +339,7 @@ class EarlyStoppingCB(MetricsCB):
 
 
 class NBatchCB(Callback):
-    order = 3
+    order = 100
 
     def __init__(self, nbatches=1):
         self.nbatches = nbatches
@@ -343,7 +350,7 @@ class NBatchCB(Callback):
 
 
 class OverfitBatch(Callback):
-    order = 3
+    order = 100
 
     def __init__(self, nbatches=1, eval_steps=1):
         self.eval_nsteps = eval_steps
@@ -360,9 +367,8 @@ class OverfitBatch(Callback):
             raise CancelEpochException()
 
 
-# TODO: model dosne't train correctly after lr_find
 class LRFinderCB(Callback):
-    order = 1
+    order = TrainCB.order + 1
 
     def __init__(self, gamma=1.3, max_mult=3):
         super().__init__()
@@ -403,6 +409,8 @@ class LRFinderCB(Callback):
 
 ## Transforms
 class BatchTransformCB(Callback):
+    order = DeviceCB.order + 1
+
     def __init__(self, tfm, train=True, valid=True):
         self.tfm = tfm
         self.train = train
@@ -415,6 +423,8 @@ class BatchTransformCB(Callback):
 
 ## Scheduler
 class BaseSchedCB(Callback):
+    order = TrainCB.order + 1
+
     def __init__(self, sched_func):
         self.sched_func = sched_func
 
@@ -461,6 +471,8 @@ class RecorderCB(Callback):
 
 ##
 class HooksCallback(Callback):
+    order = 100
+
     def __init__(
         self, hookfunc, mod_filter=None, on_train=True, on_valid=False, mods=None
     ):
@@ -497,7 +509,6 @@ class HooksCallback(Callback):
 
 
 class ActivationStats(HooksCallback):
-    order = 4
     act_filter = lambda m: isinstance(
         m, (nn.ReLU, nn.LeakyReLU, nn.GELU, GeneralReLU, nn.Sigmoid, nn.SiLU)
     )
@@ -562,7 +573,7 @@ class ActivationStats(HooksCallback):
 
 
 class AccelerateCB(TrainCB):
-    order = DeviceCB.order + 10
+    order = TrainCB.order
 
     def __init__(self, n_inp=1, mixed_precision="fp16"):
         super().__init__(n_inp=n_inp)
@@ -570,22 +581,10 @@ class AccelerateCB(TrainCB):
 
     def before_fit(self, learn):
         super().before_fit(learn)
+        # require no other TrainCB, what about DeviceCB?
         learn.model, learn.opt, learn.dls.train, learn.dls.valid = self.acc.prepare(
             learn.model, learn.opt, learn.dls.train, learn.dls.valid
         )
 
     def backward(self, learn):
         self.acc.backward(learn.loss)
-
-
-class MultDL:
-    def __init__(self, dl, mult=2):
-        self.dl, self.mult = dl, mult
-
-    def __len__(self):
-        return len(self.dl) * self.mult
-
-    def __iter__(self):
-        for o in self.dl:
-            for i in range(self.mult):
-                yield o
