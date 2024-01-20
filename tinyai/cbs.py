@@ -566,6 +566,7 @@ class AccelerateCB(TrainCB):
         self.acc = Accelerator(mixed_precision=mixed_precision)
 
     def before_fit(self, learn):
+        super().before_fit(learn)
         learn.model, learn.opt, learn.dls.train, learn.dls.valid = self.acc.prepare(
             learn.model, learn.opt, learn.dls.train, learn.dls.valid
         )
