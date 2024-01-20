@@ -236,6 +236,9 @@ class PlotCB(Callback):
     def _graph_data(self):
         return []
 
+    def cleanup_fit(self, learn):
+        plt.close()
+
 
 class PlotLossCB(PlotCB):
     def __init__(self):
