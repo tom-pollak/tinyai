@@ -10,6 +10,7 @@ __all__ = [
     "DataLoaders",
     "BasicDataset",
     "get_dls",
+    "MultDL",
 ]
 
 
@@ -73,3 +74,15 @@ def get_dls(train_ds, valid_ds, bs, **kwargs):
         DataLoader(train_ds, batch_size=bs, shuffle=True, **kwargs),
         DataLoader(valid_ds, batch_size=bs * 2, **kwargs),
     )
+
+class MultDL:
+    def __init__(self, dl, mult=2):
+        self.dl, self.mult = dl, mult
+
+    def __len__(self):
+        return len(self.dl) * self.mult
+
+    def __iter__(self):
+        for o in self.dl:
+            for i in range(self.mult):
+                yield o
