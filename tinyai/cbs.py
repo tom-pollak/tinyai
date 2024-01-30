@@ -13,9 +13,10 @@ from torch import nn
 from torch.optim.lr_scheduler import ExponentialLR
 from torch.utils.data import default_collate
 from torcheval.metrics import Mean
+from accelerate import Accelerator
 
 
-from tinyai.core import cls_name, def_device, identity, to_device, to_cpu
+from tinyai.core import cls_name, def_device, get_children, identity, to_device, to_cpu
 from tinyai.hooks import Hooks
 from tinyai.nn.act import GeneralReLU
 from tinyai.viz import show_image, get_grid
@@ -27,7 +28,7 @@ __all__ = [
     "CancelEpochException",
     "run_cbs",
     "Callback",
-    "ToDeviceCB",
+    "DeviceCB",
     "TrainCB",
     "MetricsCB",
     "ProgressCB",
@@ -60,7 +61,7 @@ class CancelEpochException(Exception):
     pass
 
 
-def run_cbs(cbs, method_nm, learn=None, ignored=None):
+def run_cbs(cbs, method_nm, learn, ignored=None):
     for cb in sorted(cbs, key=attrgetter("order")):
         if ignored is not None and isinstance(cb, tuple(ignored)):
             continue
@@ -85,7 +86,7 @@ class Callback:
 
 
 ## Training
-class ToDeviceCB(Callback):
+class DeviceCB(Callback):
     order = 0
 
     def before_fit(self, learn):
@@ -227,7 +228,9 @@ class PlotLossCB(PlotCB):
 
     def after_epoch(self, learn):
         if not learn.training:  # store valid
-            self.val_losses.append((learn.train_steps, to_cpu(learn.epoch_loss.compute())))
+            self.val_losses.append(
+                (learn.train_steps, to_cpu(learn.epoch_loss.compute()))
+            )
         super().after_epoch(learn)
 
     def _graph_data(self):
@@ -444,7 +447,7 @@ class HooksCallback(Callback):
         if self.mods:
             mods = self.mods
         else:
-            mods = filter(self.mod_filter, learn.model.modules())
+            mods = filter(self.mod_filter, get_children(learn.model))
         self.hooks = Hooks(mods, partial(self._hookfunc, learn))
 
     def _hookfunc(self, learn, *args, **kwargs):
@@ -464,7 +467,7 @@ class HooksCallback(Callback):
 class ActivationStats(HooksCallback):
     order = 4
     act_filter = lambda m: isinstance(
-        m, (nn.ReLU, nn.LeakyReLU, nn.GELU, GeneralReLU, nn.Sigmoid)
+        m, (nn.ReLU, nn.LeakyReLU, nn.GELU, GeneralReLU, nn.Sigmoid, nn.SiLU)
     )
 
     def __init__(self, mod_filter=act_filter):
@@ -486,8 +489,10 @@ class ActivationStats(HooksCallback):
         return torch.stack(h.stats[2][lim]).t().float().log1p()
 
     @staticmethod
-    def get_min(h):
-        h1 = torch.stack(h.stats[2]).t().float()
+    def get_min(h, lim=None):
+        if not isinstance(lim, slice):
+            lim = slice(lim)
+        h1 = torch.stack(h.stats[2][lim]).t().float()
         return h1[0] / h1.sum(0)
 
     def color_dim(self, figsize=(11, 5), lim=None):
@@ -496,24 +501,58 @@ class ActivationStats(HooksCallback):
             show_image(self.get_hist(h, lim), ax, origin="lower")
         fig.show()
 
-    def dead_chart(self, figsize=(11, 5)):
+    def dead_chart(self, figsize=(11, 5), lim=None):
         fig, axes = get_grid(len(self), figsize=figsize)
         for ax, h in zip(axes.flatten(), self):
-            ax.plot(self.get_min(h))
+            ax.plot(self.get_min(h, lim=lim))
             ax.set_ylim(0, 1)
         fig.show()
 
-    def plot_stats(self, figsize=(10, 4)):
+    def plot_stats(self, figsize=(10, 4), lim=None):
         fig, axs = plt.subplots(1, 2, figsize=figsize)
+        if not isinstance(lim, slice):
+            lim = slice(lim)
         for h in self:
             for i in 0, 1:
-                axs[i].plot(h.stats[i])
+                axs[i].plot(h.stats[i][lim])
         axs[0].set_title("Means")
         axs[1].set_title("Stdevs")
         fig.legend(fc.L.range(self))
         fig.show()
 
-    def plot_all(self):
-        self.color_dim()
-        self.plot_stats()
-        self.dead_chart()
+    def plot_all(self, lim=None):
+        self.color_dim(lim=lim)
+        self.plot_stats(lim=lim)
+        self.dead_chart(lim=lim)
+
+
+## Accelerated Training
+
+
+class AccelerateCB(TrainCB):
+    order = DeviceCB.order + 10
+
+    def __init__(self, n_inp=1, mixed_precision="fp16"):
+        super().__init__(n_inp=n_inp)
+        self.acc = Accelerator(mixed_precision=mixed_precision)
+
+    def before_fit(self, learn):
+        learn.model, learn.opt, learn.dls.train, learn.dls.valid = self.acc.prepare(
+            learn.model, learn.opt, learn.dls.train, learn.dls.valid
+        )
+
+    def backward(self, learn):
+        self.acc.backward(learn.loss)
+
+
+class MultDL:
+    def __init__(self, dl, mult=2):
+        self.dl, self.mult = dl, mult
+
+    def __len__(self):
+        return len(self.dl) * self.mult
+
+    def __iter__(self):
+        for o in self.dl:
+            for i in range(self.mult):
+                yield o

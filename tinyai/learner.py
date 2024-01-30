@@ -1,14 +1,12 @@
 from __future__ import annotations
 from functools import partial
-from types import NoneType
 import fastcore.all as fc
 
 import torch
-import torch.nn.functional as F
 from torch import optim
 from torch.optim import lr_scheduler
 
-from tinyai.core import cls_name, def_device
+from tinyai.core import cls_name
 from tinyai.cbs import CancelBatchException, CancelEpochException, CancelFitException
 from tinyai.cbs import *
 from tinyai.hooks import Hooks
@@ -39,7 +37,21 @@ class with_cbs:
 
 
 class Learner:
-    def __init__(self, model, dls, loss_func, lr=None, cbs=None, opt_func=optim.AdamW):
+    def __init__(
+        self,
+        model,
+        dls,
+        loss_func,
+        lr=None,
+        cbs=None,
+        opt_func=partial(optim.AdamW, eps=1e-5),
+    ):
+        """
+        AdamW eps 1e-5:
+        When we divide by the exponential moving average of the squared gradient we
+        don't want to divide by 0, So we add eps.
+        If eps is really small, this can make the lr *huge*, so I increase it to 1e-5
+        """
         self.model, self.dls, self.loss_func, self.lr, self.opt_func = (
             model,
             dls,
@@ -143,12 +155,16 @@ class Learner:
             nonlocal res, totp, totf
             nparms = sum(o.numel() for o in mod.parameters())
             totp += nparms
-            *_, h, w = outp.shape
+            try:
+                *_, h, w = outp.shape
+            except AttributeError:
+                print("Skipping:", mod)
+                return
             flops = sum(_flops(o, h, w) for o in mod.parameters()) / 1e6
             totf += flops
             res += f"|{cls_name(mod)}|{tuple(inp[0].shape)}|{tuple(outp.shape)}|{nparms}|{flops:.1f}|\n"
 
-        with Hooks(self.model, _f) as hooks:
+        with Hooks(list(self.model.modules()), _f) as hooks:
             self.fit(
                 1,
                 lr=1,
@@ -167,7 +183,7 @@ class Learner:
 
 class Trainer(Learner):
     default_cbs = [
-        ToDeviceCB(),
+        DeviceCB(),
         TrainCB(n_inp=1),
         ProgressCB(),
         PlotLossCB(),
