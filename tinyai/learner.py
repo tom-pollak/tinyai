@@ -60,8 +60,10 @@ class Learner:
         valid=True,
     ):
         ## Settings for only this fit()
-        self.cbs.extend(fc.L(cbs))
-        self.ignored_cbs.extend(fc.L(ignore_cbs))
+        new_cbs = fc.L(cbs)
+        ignore_cbs = fc.L(ignore_cbs)
+        self.cbs.extend(new_cbs)
+        self.ignored_cbs.extend(ignore_cbs)
 
         ## Setup
         self.train_steps = 0
@@ -77,8 +79,10 @@ class Learner:
         try:
             self._fit(train, valid)
         finally:
-            self.cbs = self.cbs[: -len(fc.L(cbs))]
-            self.ignored_cbs = self.ignored_cbs[: -len(fc.L(ignore_cbs))]
+            if len(new_cbs):
+                self.cbs = self.cbs[: -len(new_cbs)]
+            if len(ignore_cbs):
+                self.ignored_cbs = self.ignored_cbs[: -len(ignore_cbs)]
 
     @with_cbs("fit")
     def _fit(self, train, valid):
@@ -165,7 +169,6 @@ class Trainer(Learner):
     default_cbs = [
         ToDeviceCB(),
         TrainCB(n_inp=1),
-        MetricsCB(),
         ProgressCB(),
         PlotLossCB(),
     ]
@@ -175,15 +178,6 @@ class Trainer(Learner):
         kwargs["cbs"] = self.default_cbs + kwargs.get("cbs", [])
         super().__init__(model, dls, **kwargs)
 
-    @fc.delegates(Learner.fit)  # type: ignore
-    def fit(self, nepochs, metrics=None, **kwargs):
-        # Add metrics
-        if not isinstance(metrics, dict):
-            metrics = {cls_name(m): m for m in fc.L(metrics)}
-        self.default_cbs[2].metrics.update(**metrics)
-
-        super().fit(nepochs, **kwargs)
-
     def lr_find(self, gamma=1.3, max_mult=3, start_lr=1e-5, max_epochs=10):
         self.fit(
             max_epochs,
@@ -192,11 +186,12 @@ class Trainer(Learner):
             ignore_cbs=PlotCB,
         )
 
-    def validate(self):
-        self.fit(1, train=False, valid=True, ignore_cbs=PlotCB)
+    def validate(self, cbs=None):
+        self.fit(1, lr=1000, train=False, valid=True, cbs=cbs, ignore_cbs=PlotCB)
 
     fc.delegates(Learner.fit)  # type: ignore
 
+    @fc.delegates(Learner.fit)  # type: ignore
     def fit_one_cycle(self, nepochs, **kwargs):
         tmax = len(self.dls.train) * nepochs
 
