@@ -6,14 +6,21 @@ __all__ = ["Hook", "Hooks"]
 
 class Hook:
     def __init__(self, m, f):
+        self.m = m
         self.hook = m.register_forward_hook(partial(f, self))
 
     def remove(self):
+        self.m = None
         self.hook.remove()
 
     def __del__(self):
         self.remove()
 
+    def __enter__(self, *args):
+        return self
+
+    def __exit__(self, *args):
+        self.remove()
 
 class Hooks(list):
     def __init__(self, ms, f):

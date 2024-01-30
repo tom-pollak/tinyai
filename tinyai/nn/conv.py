@@ -1,13 +1,24 @@
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 
 from torch import nn
+import torch.nn.functional as F
 
 
 from tinyai.core import identity
 from tinyai.nn.act import GeneralReLU
+from tinyai.nn.init import init_params_
 
-__all__ = ["conv", "deconv", "ResBlock"]
+__all__ = [
+    "conv",
+    "deconv",
+    "ResBlock",
+    "ConvLayer",
+    "Conv1x1",
+    "Conv3x3",
+    "LightConv3x3",
+    "LightConvStream",
+]
 
 act_gr = partial(GeneralReLU, leak=0.1, sub=0.4)
 
@@ -64,3 +75,152 @@ class ResBlock(nn.Module):
 
     def forward(self, x):
         return self.act(self.convs(x) + self.id_conv(self.pool(x)))
+
+
+####
+
+
+class ConvLayer(nn.Module):
+    """Convolution layer (conv + bn + relu)."""
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        padding=0,
+        groups=1,
+        IN=False,
+    ):
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+            bias=False,
+            groups=groups,
+        )
+        if IN:
+            self.bn = nn.InstanceNorm2d(out_channels, affine=True)
+        else:
+            self.bn = nn.BatchNorm2d(out_channels)
+        init_params_(self.modules())
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
+        return F.relu(x)
+
+
+class Conv1x1(nn.Module):
+    """1x1 convolution + bn/IN + relu."""
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        stride=1,
+        groups=1,
+        IN=False,
+    ):
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            1,
+            stride=stride,
+            padding=0,
+            bias=False,
+            groups=groups,
+        )
+
+        if IN:
+            self.norm = nn.InstanceNorm2d(out_channels, affine=True)
+        else:
+            self.norm = nn.BatchNorm2d(out_channels)
+
+        init_params_(self.modules())
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.norm(x)
+        return F.relu(x)
+
+
+class Conv3x3(nn.Module):
+    """3x3 convolution + bn + relu."""
+
+    def __init__(self, in_channels, out_channels, stride=1, groups=1):
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            3,
+            stride=stride,
+            padding=1,
+            bias=False,
+            groups=groups,
+        )
+        self.bn = nn.BatchNorm2d(out_channels)
+        init_params_(self.modules())
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
+        return F.relu(x)
+
+
+class LightConv3x3(nn.Module):
+    """Lightweight 3x3 convolution.
+
+    1x1 (linear) + dw 3x3 (nonlinear).
+    """
+
+    def __init__(self, in_channels, out_channels, dropout_p=None):
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            in_channels, out_channels, 1, stride=1, padding=0, bias=False
+        )
+        self.conv2 = nn.Conv2d(
+            out_channels,
+            out_channels,
+            3,
+            stride=1,
+            padding=1,
+            bias=False,
+            groups=out_channels,
+        )
+        self.bn = nn.BatchNorm2d(out_channels)
+        if dropout_p is not None:
+            self.drop = nn.Dropout2d(p=dropout_p)
+        init_params_(self.modules())
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.bn(x)
+        x = F.relu(x)
+        if hasattr(self, "drop"):
+            x = self.drop(x)
+        return x
+
+
+class LightConvStream(nn.Module):
+    """Lightweight convolution stream."""
+
+    def __init__(self, in_channels, out_channels, depth, dropout_p=None):
+        super().__init__()
+        assert depth >= 1, "depth must be equal to or larger than 1, but got {}".format(
+            depth
+        )
+        layers = []
+        layers += [LightConv3x3(in_channels, out_channels, dropout_p=dropout_p)]
+        for i in range(depth - 1):
+            layers += [LightConv3x3(out_channels, out_channels, dropout_p=dropout_p)]
+        self.layers = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.layers(x)
