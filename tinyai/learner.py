@@ -1,5 +1,6 @@
 from __future__ import annotations
 from functools import partial
+from types import NoneType
 import fastcore.all as fc
 
 import torch
@@ -39,7 +40,7 @@ class with_cbs:
 
 class Learner:
     def __init__(
-        self, model, dls, loss_func=F.mse_loss, lr=0.1, cbs=None, opt_func=optim.SGD
+        self, model, dls, loss_func, lr=None, cbs=None, opt_func=optim.SGD
     ):
         self.model, self.dls, self.loss_func, self.lr, self.opt_func = (
             model,
@@ -64,14 +65,17 @@ class Learner:
         self.cbs.extend(fc.L(cbs))
 
         ## Setup
-        self.model = self.model.to(def_device)
         self.train_steps = 0
         self.nepochs = nepochs
         self.epochs = range(nepochs)
+        lr = lr or self.lr
         if lr is None:
-            lr = self.lr
+            raise ValueError("Specify lr in either init or fit")
+
+        self.model = self.model.to(def_device)
         self.opt = self.opt_func(self.model.parameters(), lr=lr)  # type: ignore
 
+        ## Fit
         try:
             self._fit(train, valid)
         finally:
@@ -144,7 +148,13 @@ class Learner:
             res += f"|{cls_name(mod)}|{tuple(inp[0].shape)}|{tuple(outp.shape)}|{nparms}|{flops:.1f}|\n"
 
         with Hooks(self.model, _f) as hooks:
-            self.fit(1, lr=1, train=False, cbs=SingleBatchCB(), ignore_cbs=[PlotCB])
+            self.fit(
+                1,
+                lr=1,
+                train=False,
+                cbs=NBatchCB(),
+                ignore_cbs=[ProgressCB, PlotCB],
+            )
         print(f"Tot params: {totp}; MFLOPS: {totf:.1f}")
         if fc.IN_NOTEBOOK:
             from IPython.display import Markdown
@@ -155,15 +165,27 @@ class Learner:
 
 
 class Trainer(Learner):
+    default_cbs = [
+        ToDeviceCB(),
+        TrainCB(n_inp=1),
+        MetricsCB(),
+        ProgressCB(),
+        PlotLossCB(),
+    ]
+
     @fc.delegates(Learner.__init__)  # type: ignore
     def __init__(self, model, dls, **kwargs):
-        kwargs["cbs"] = [
-            ToDeviceCB(),
-            TrainCB(n_inp=1),
-            ProgressCB(),
-            PlotLossCB(),
-        ] + kwargs.get("cbs", [])
+        kwargs["cbs"] = self.default_cbs + kwargs.get("cbs", [])
         super().__init__(model, dls, **kwargs)
+
+    @fc.delegates(Learner.fit)  # type: ignore
+    def fit(self, nepochs, metrics=None, **kwargs):
+        # Add metrics
+        if isinstance(metrics, (list, NoneType)):
+            metrics = {cls_name(m): m for m in fc.L(metrics)}
+        self.default_cbs[2].metrics.update(**metrics)
+
+        super().fit(nepochs, **kwargs)
 
     def lr_find(self, gamma=1.3, max_mult=3, start_lr=1e-5, max_epochs=10):
         self.fit(

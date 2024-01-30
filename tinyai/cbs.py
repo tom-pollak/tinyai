@@ -33,8 +33,8 @@ __all__ = [
     "PlotLossCB",
     "PlotMetricsCB",
     "EarlyStoppingCB",
-    "SingleBatchCB",
-    "OverfitSingleBatchCB",
+    "NBatchCB",
+    "OverfitBatch",
     "LRFinderCB",
     "BatchTransformCB",
     "BaseSchedCB",
@@ -200,7 +200,6 @@ class PlotLossCB(PlotCB):
         self.required_cbs = [MetricsCB, ProgressCB]
 
     def before_fit(self, learn):
-        print(learn.cbs)
         require_cbs(learn.cbs, self.required_cbs)
         self.mbar = learn.epochs
         self.train_losses = []
@@ -283,20 +282,27 @@ class EarlyStoppingCB(MetricsCB):
                 self.best_metric = metric
 
 
-class SingleBatchCB(Callback):
+class NBatchCB(Callback):
     order = 3
 
+    def __init__(self, nbatches=1):
+        self.nbatches = nbatches
+
     def after_batch(self, learn):
-        raise CancelEpochException()
+        if learn.iter + 1 >= self.nbatches:
+            raise CancelEpochException()
 
 
-class OverfitSingleBatchCB(SingleBatchCB):
-    def __init__(self, eval_steps=float("inf")):
+class OverfitBatch(Callback):
+    order = 3
+
+    def __init__(self, eval_steps=float("inf"), nbatches=1):
         self.eval_nsteps = eval_steps
+        self.nbatches = nbatches
 
     def after_batch(self, learn):
-        # cancel after one training batch
-        if learn.training:
+        # cancel after nbatches training batches if training
+        if learn.training and learn.iter + 1 >= self.nbatches:
             raise CancelEpochException()
 
     def before_batch(self, learn):
