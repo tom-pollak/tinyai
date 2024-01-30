@@ -18,6 +18,7 @@ __all__ = [
     "set_output",
     "set_seed",
     "toggle_mpl_cmap",
+    "get_children",
     "def_device",
     "to_device",
     "to_cpu",
@@ -55,6 +56,11 @@ def toggle_mpl_cmap():
         mpl.rcParams["image.cmap"] = "viridis"
     print("setting cmap:", mpl.rcParams["image.cmap"])
 
+##
+
+def get_children(model):
+    children = list(model.children())
+    return [model] if len(children) == 0 else [ci for c in children for ci in get_children(c)]
 
 ## Device
 
