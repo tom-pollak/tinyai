@@ -1,0 +1,10 @@
+name: tinyai
+channels:
+- conda-forge
+dependencies:
+- jupyter
+- matplotlib
+- notebook
+- numpy
+- python=3.10
+
