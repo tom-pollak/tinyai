@@ -173,7 +173,9 @@ class MetricsCB(Callback):
 
 class ProgressCB(Callback):
     order = 2
-    def __init__(self, plot=False): self.plot = plot
+    def __init__(self, plot=False):
+        self.init_plot = plot
+        self.plot = plot
 
     def before_fit(self, learn):
         learn.epochs = self.mbar = master_bar(learn.epochs)
@@ -191,11 +193,16 @@ class ProgressCB(Callback):
     def before_epoch(self, learn):
         learn.dl = progress_bar(learn.dl, leave=False, parent=self.mbar)
 
+        self.plot = self.init_plot
+        for cb in learn.cbs:
+            if isinstance(cb, LRFinderCB):
+                self.plot = False
+
     def after_batch(self, learn):
         learn.dl.comment = f'{learn.loss:.3f}'
         if self.plot and hasattr(learn, 'metrics') and learn.training:
             self.losses.append(learn.loss.item())
-            if self.val_losses: self.mbar.update_graph([[fc.L.range(self.losses), self.losses],[fc.L.range(learn.epoch).map(lambda x: (x+1)*len(learn.dls.train)), self.val_losses]])
+            self.mbar.update_graph([[fc.L.range(self.losses), self.losses],[fc.L.range(learn.epoch).map(lambda x: (x+1)*len(learn.dls.train)), self.val_losses]])
 
     def after_epoch(self, learn):
         if not learn.training:
@@ -240,7 +247,7 @@ class SingleBatchCB(Callback):
 
 
 class LRFinderCB(Callback):
-    order = 2
+    order = 1
     def __init__(self, gamma=1.3, max_mult=3):
         fc.store_attr()
         super().__init__()
