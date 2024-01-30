@@ -17,10 +17,12 @@ __all__ = [
     "MODEL_DIR",
     "list_models",
     "identity",
+    "Noop",
     "cls_name",
     "set_output",
     "set_seed",
     "toggle_mpl_cmap",
+    "match_modules",
     "get_children",
     "def_device",
     "to_device",
@@ -42,6 +44,11 @@ def list_models():
 
 def identity(*x):
     return x
+
+
+class Noop(torch.nn.Module):
+    def forward(self, x):
+        return x
 
 
 def cls_name(cls):
@@ -80,6 +87,14 @@ def get_children(model):
         if len(children) == 0
         else [ci for c in children for ci in get_children(c)]
     )
+
+
+def match_modules(model, layers: list[str]):
+    return [
+        m
+        for m in get_children(model)
+        if any(substr in cls_name(m) for substr in layers)
+    ]
 
 
 ## Device

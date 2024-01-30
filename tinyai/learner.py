@@ -2,6 +2,7 @@ from __future__ import annotations
 from functools import partial
 import warnings
 import fastcore.all as fc
+from datetime import datetime
 
 import torch
 from torch import optim
@@ -192,8 +193,20 @@ class Learner:
         for p in self.model.parameters():
             p.requires_grad_(True)
 
-    def save(self, fn):
-        torch.save(self.model.state_dict(), self.model_dir / fn)
+    def save(self, fn=None, overwrite: bool = "warn"):  # type: ignore
+        self.model_dir.mkdir(exist_ok=True, parents=True)
+
+        if fn is None:
+            fn = f"{datetime.now().strftime('%Y-%m-%d-%H:%M')}_{cls_name(self.model)}"
+
+        save_file = self.model_dir / fn
+        if save_file.exists():
+            if overwrite == "warn":
+                warnings.warn(f"{save_file} already exists, overwriting")
+            elif not overwrite:
+                warnings.warn(f"{save_file} already exists, exiting")
+                return
+        torch.save(self.model.state_dict(), save_file)
 
     def load(self, fn):
         self.model.load_state_dict(self.model_dir / fn)
@@ -202,7 +215,7 @@ class Learner:
 class Trainer(Learner):
     default_cbs = [
         DeviceCB(),
-        AccelerateCB(n_inp=1) if def_device == 'cuda' else TrainCB(n_inp=1),
+        AccelerateCB(n_inp=1) if def_device == "cuda" else TrainCB(n_inp=1),
         ProgressCB(),
         PlotLossCB(),
     ]

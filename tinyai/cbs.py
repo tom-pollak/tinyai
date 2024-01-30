@@ -7,6 +7,8 @@ import fastcore.all as fc
 from operator import attrgetter
 import matplotlib.pyplot as plt
 from fastprogress import progress_bar, master_bar
+from datetime import datetime
+import logging
 
 import torch
 from torch import Tensor
@@ -17,7 +19,7 @@ from torcheval.metrics import Mean
 from accelerate import Accelerator
 
 
-from tinyai.core import cls_name, def_device, get_children, identity, to_device, to_cpu
+from tinyai.core import cls_name, def_device, get_children, to_device, to_cpu, Noop
 from tinyai.hooks import Hooks
 from tinyai.nn.act import GeneralReLU
 from tinyai.viz import show_image, get_grid
@@ -37,6 +39,7 @@ __all__ = [
     "PlotLossCB",
     "PlotMetricsCB",
     "EarlyStoppingCB",
+    "CheckpointCB",
     "NBatchCB",
     "OverfitBatch",
     "LRFinderCB",
@@ -143,6 +146,8 @@ class TrainCB(BaseTrainCB):
 class MetricsCB(Callback):
     order = 50
     sigmoid = False
+    show_train = True
+
     required_cbs = [BaseTrainCB]
 
     def __init__(self, *ms, plot=False, **metrics):
@@ -161,12 +166,14 @@ class MetricsCB(Callback):
             o.reset()
 
     def after_batch(self, learn):
-        x, y, *_ = to_cpu(learn.batch)
+        _, y, *_ = to_cpu(learn.batch)
+
+        preds = to_cpu(learn.preds)
         if self.sigmoid:
-            x = x.sigmoid()
+            preds = preds.sigmoid()
 
         for m in self.metrics.values():
-            m.update(to_cpu(learn.preds), y)
+            m.update(preds, y)
 
     def after_epoch(self, learn):
         if (learn.training and self.show_train) or not learn.training:
@@ -246,8 +253,6 @@ class PlotCB(Callback):
 
 
 class PlotLossCB(PlotCB):
-    show_train = True
-
     def __init__(self):
         super().__init__()
         self.required_cbs = [BaseTrainCB, ProgressCB]
@@ -304,8 +309,6 @@ class PlotMetricsCB(PlotCB):
         return [default_collate(x) for x in self.recs.values()]
 
 
-# TODO: add option to save best model
-# TODO: with early stopping enabled last epoch is not printed
 class EarlyStoppingCB(MetricsCB):
     order = 100
 
@@ -336,6 +339,31 @@ class EarlyStoppingCB(MetricsCB):
             else:
                 self.patience = self.init_patience
                 self.best_metric = metric
+
+
+class CheckpointCB(MetricsCB):
+    order = EarlyStoppingCB.order - 1
+
+    def __init__(self, metric=None):
+        "metric = None uses val loss"
+        if metric is not None:
+            super().__init__(ckpt_metric=metric)
+            self.metric = self.metrics["ckpt_metric"]
+
+        self.best_metric = float("inf")
+
+    def before_fit(self, learn):
+        if self.metric is None:
+            self.metric = learn.epoch_loss
+
+    def after_epoch(self, learn):
+        if not learn.training:
+            metric = self.metric.compute().item()
+            if metric > self.best_metric:
+                logging.info(f"Checkpoint {learn.epoch}: {metric:.4f}")
+                fn = f"ckpt-{learn.epoch}_{datetime.now().strftime('%Y-%m-%d-%H:%M')}_{cls_name(learn.model)}"
+                self.best_metric = metric
+                learn.save(fn, overwrite=True)
 
 
 class NBatchCB(Callback):
@@ -510,7 +538,7 @@ class HooksCallback(Callback):
 
 class ActivationStats(HooksCallback):
     act_filter = lambda m: isinstance(
-        m, (nn.ReLU, nn.LeakyReLU, nn.GELU, GeneralReLU, nn.Sigmoid, nn.SiLU)
+        m, (nn.ReLU, nn.LeakyReLU, nn.GELU, GeneralReLU, nn.Sigmoid, nn.SiLU, Noop)
     )
 
     def __init__(self, mod_filter=act_filter):
@@ -588,3 +616,40 @@ class AccelerateCB(TrainCB):
 
     def backward(self, learn):
         self.acc.backward(learn.loss)
+
+
+## Debug
+
+
+class DebugTrain(Callback):
+    order = 100
+
+    def before_fit(self, learn):
+        print("before_fit")
+
+    def before_epoch(self, learn):
+        print("before_epoch")
+
+    def before_batch(self, learn):
+        print("before_batch")
+
+    def after_pred(self, learn):
+        print("after_pred")
+
+    def after_loss(self, learn):
+        print(f"after_loss: {learn.loss}")
+
+    def after_backward(self, learn):
+        print("after_backward")
+
+    def after_step(self, learn):
+        print("after_step")
+
+    def after_batch(self, learn):
+        print("after_batch")
+
+    def after_epoch(self, learn):
+        print("after epoch")
+
+    def after_fit(self, learn):
+        print("after_fit")
