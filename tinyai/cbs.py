@@ -46,6 +46,8 @@ __all__ = [
     "RecorderCB",
     "HooksCallback",
     "ActivationStats",
+    "AccelerateCB",
+    "MultDL"
 ]
 
 
