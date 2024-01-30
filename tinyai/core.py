@@ -13,7 +13,8 @@ import traceback
 import gc
 
 __all__ = [
-    "num_params",
+    "identity",
+    "cls_name",
     "set_output",
     "set_seed",
     "def_device",
@@ -24,8 +25,14 @@ __all__ = [
 ]
 
 
-def num_params(model):
-    return sum(o.numel() for o in model.parameters())
+def identity(x):
+    return x
+
+
+def cls_name(cls):
+    if isinstance(cls, type):
+        return cls.__name__
+    return type(cls).__name__
 
 
 def set_output(precision=3):

@@ -5,10 +5,12 @@ import fastcore.all as fc
 import torch
 import torch.nn.functional as F
 from torch import optim
+from torch.optim import lr_scheduler
 
-from tinyai.core import def_device
+from tinyai.core import cls_name, def_device
 from tinyai.cbs import CancelBatchException, CancelEpochException, CancelFitException
 from tinyai.cbs import *
+from tinyai.hooks import Hooks
 
 __all__ = [
     "with_cbs",
@@ -47,30 +49,25 @@ class Learner:
             opt_func,
         )
         self.cbs = fc.L(cbs)
-        self.plot = None
 
     def fit(
         self,
-        n_epochs,
+        nepochs,
         train=True,
         valid=True,
         cbs=None,
         lr=None,
         ignore_cbs=None,
-        plot=None,
     ):
         ## Settings for only this fit()
-        if plot is not None:
-            self.plot = plot
-        self.ignore_cbs = fc.L(ignore_cbs)
-        cbs = fc.L(cbs)
-        for cb in cbs:
-            self.cbs.append(cb)
+        self.ignore_cbs = ignore_cbs
+        self.cbs.extend(fc.L(cbs))
 
         ## Setup
         self.model = self.model.to(def_device)
-        self.n_epochs = n_epochs
-        self.epochs = range(n_epochs)
+        self.train_steps = 0
+        self.nepochs = nepochs
+        self.epochs = range(nepochs)
         if lr is None:
             lr = self.lr
         self.opt = self.opt_func(self.model.parameters(), lr=lr)  # type: ignore
@@ -78,9 +75,8 @@ class Learner:
         try:
             self._fit(train, valid)
         finally:
-            ## Remove settings
-            self.plot = None
-            for cb in cbs:
+            self.ignore_cbs = None
+            for cb in fc.L(cbs):
                 self.cbs.remove(cb)
 
     @with_cbs("fit")
@@ -107,6 +103,8 @@ class Learner:
 
     @with_cbs("batch")
     def _one_batch(self):
+        if self.training:
+            self.train_steps += 1
         self.predict()
         self.callback("after_predict")
         self.get_loss()
@@ -126,6 +124,35 @@ class Learner:
             return partial(self.callback, name)
         raise AttributeError(name)
 
+    def summary(self):
+        def _flops(x, h, w) -> int:  # type: ignore
+            if x.dim() < 3:
+                return x.numel()
+            if x.dim() == 4:
+                return x.numel() * h * w
+
+        res = "|Module|Input|Output|Num params|MFLOPS|\n|--|--|--|--|--|\n"
+        totp, totf = 0, 0
+
+        def _f(hook, mod, inp, outp):
+            nonlocal res, totp, totf
+            nparms = sum(o.numel() for o in mod.parameters())
+            totp += nparms
+            *_, h, w = outp.shape
+            flops = sum(_flops(o, h, w) for o in mod.parameters()) / 1e6
+            totf += flops
+            res += f"|{cls_name(mod)}|{tuple(inp[0].shape)}|{tuple(outp.shape)}|{nparms}|{flops:.1f}|\n"
+
+        with Hooks(self.model, _f) as hooks:
+            self.fit(1, lr=1, train=False, cbs=SingleBatchCB(), ignore_cbs=[PlotCB])
+        print(f"Tot params: {totp}; MFLOPS: {totf:.1f}")
+        if fc.IN_NOTEBOOK:
+            from IPython.display import Markdown
+
+            return Markdown(res)
+        else:
+            print(res)
+
 
 class Trainer(Learner):
     @fc.delegates(Learner.__init__)  # type: ignore
@@ -133,12 +160,29 @@ class Trainer(Learner):
         kwargs["cbs"] = [
             ToDeviceCB(),
             TrainCB(n_inp=1),
-            ProgressCB(plot=True),
+            ProgressCB(),
+            PlotLossCB(),
         ] + kwargs.get("cbs", [])
         super().__init__(model, dls, **kwargs)
 
     def lr_find(self, gamma=1.3, max_mult=3, start_lr=1e-5, max_epochs=10):
-        self.fit(max_epochs, lr=start_lr, cbs=LRFinderCB(gamma, max_mult), plot=False)
+        self.fit(
+            max_epochs,
+            lr=start_lr,
+            cbs=LRFinderCB(gamma, max_mult),
+            ignore_cbs=[PlotCB],
+        )
 
     def validate(self):
-        self.fit(1, train=False, valid=True, plot=False)
+        self.fit(1, train=False, valid=True, ignore_cbs=[PlotCB])
+
+    fc.delegates(Learner.fit)  # type: ignore
+
+    def fit_one_cycle(self, nepochs, max_lr, **kwargs):
+        if "lr" in kwargs:
+            raise ValueError("fit_one_cycle uses max_lr, do not set lr")
+
+        tmax = len(self.dls.train) * nepochs
+        sched = partial(lr_scheduler.OneCycleLR, max_lr=max_lr, total_steps=tmax)
+        kwargs["cbs"] = [BatchSchedCB(sched)] + fc.L(kwargs.get("cbs", None))
+        self.fit(nepochs, **kwargs)
