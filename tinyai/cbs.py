@@ -34,6 +34,7 @@ __all__ = [
     "DeviceCB",
     "TrainCB",
     "MetricsCB",
+    "DefaultMetricsCB",
     "ProgressCB",
     "PlotCB",
     "PlotLossCB",
@@ -150,7 +151,7 @@ class MetricsCB(Callback):
 
     required_cbs = [BaseTrainCB]
 
-    def __init__(self, *ms, plot=False, **metrics):
+    def __init__(self, *ms, **metrics):
         for o in ms:
             metrics[cls_name(o)] = o
         self.metrics = metrics
@@ -206,6 +207,28 @@ class MetricsCB(Callback):
                 else:
                     raise ValueError(f"{metric} is not compatiable")
             self._log(log)
+
+
+class DefaultMetricsCB(MetricsCB):
+    def before_fit(self, learn):
+        self.enabled = not any(
+            isinstance(cb, MetricsCB) and not isinstance(cb, DefaultMetricsCB)
+            for cb in learn.cbs
+        )
+        if self.enabled:
+            super().before_fit(learn)
+
+    def before_epoch(self, learn):
+        if self.enabled:
+            return super().before_epoch(learn)
+
+    def after_batch(self, learn):
+        if self.enabled:
+            return super().after_batch(learn)
+
+    def after_epoch(self, learn):
+        if self.enabled:
+            return super().after_epoch(learn)
 
 
 class ProgressCB(Callback):

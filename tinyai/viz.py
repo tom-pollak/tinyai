@@ -11,10 +11,13 @@ __all__ = ["show_image", "subplots", "get_grid", "show_images"]
 @fc.delegates(plt.Axes.imshow)  # type: ignore
 def show_image(im, ax=None, figsize=None, title=None, noframe=True, **kwargs):
     "Show a PIL or PyTorch image on `ax`."
+    if im is None:
+        return ax
     if fc.hasattrs(im, ("cpu", "permute", "detach")):
         im = im.detach().cpu()
         if len(im.shape) == 3 and im.shape[0] < 5:
             im = im.permute(1, 2, 0)
+        im = im.numpy()
     elif not isinstance(im, np.ndarray):
         im = np.array(im)
     if im.shape[-1] == 1:
@@ -67,8 +70,8 @@ def get_grid(
     elif ncols:
         nrows = nrows or int(math.ceil(n / ncols))
     else:
-        nrows = int(math.ceil(math.sqrt(n)))
-        ncols = nrows
+        ncols = int(math.ceil(math.sqrt(n)))
+        nrows = int(math.ceil(n / ncols))
     fig, axs = subplots(nrows, ncols, **kwargs)
     for i in range(n, nrows * ncols):
         axs.flat[i].set_axis_off()

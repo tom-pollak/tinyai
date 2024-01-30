@@ -64,7 +64,6 @@ class Learner:
             opt_func,
         )
         self.cbs = fc.L(cbs)
-        self.ignored_cbs = []
 
     def fit(
         self,
@@ -77,9 +76,8 @@ class Learner:
     ):
         ## Settings for only this fit()
         new_cbs = fc.L(cbs)
-        ignore_cbs = fc.L(ignore_cbs)
         self.cbs.extend(new_cbs)
-        self.ignored_cbs.extend(ignore_cbs)
+        self.ignore_cbs = ignore_cbs
 
         ## Setup
         self.train_steps = 0
@@ -97,8 +95,7 @@ class Learner:
         finally:
             if len(new_cbs):
                 self.cbs = self.cbs[: -len(new_cbs)]
-            if len(ignore_cbs):
-                self.ignored_cbs = self.ignored_cbs[: -len(ignore_cbs)]
+            self.ignore_cbs = None
 
     @with_cbs("fit")
     def _fit(self, train, valid):
@@ -138,7 +135,7 @@ class Learner:
             self.zero_grad()
 
     def callback(self, method_nm):
-        run_cbs(self.cbs, method_nm, learn=self, ignored=self.ignored_cbs)
+        run_cbs(self.cbs, method_nm, learn=self, ignored=self.ignore_cbs)
 
     def __getattr__(self, name):
         if name in ("predict", "get_loss", "backward", "step", "zero_grad"):
@@ -218,27 +215,24 @@ class Trainer(Learner):
         AccelerateCB(n_inp=1) if def_device == "cuda" else TrainCB(n_inp=1),
         ProgressCB(),
         PlotLossCB(),
+        DefaultMetricsCB(),  # Only called if MetricsCB is not given at fit
     ]
 
     @fc.delegates(Learner.__init__)  # type: ignore
-    def __init__(self, model, dls, **kwargs):
-        kwargs["cbs"] = self.default_cbs + kwargs.get("cbs", [])
-        super().__init__(model, dls, **kwargs)
-
-        # HACK
-        if not len(list(filter(lambda cb: cls_name(cb) == "MetricsCB", self.cbs))):
-            warnings.warn("MetricsCB is not in cbs, you probably want to add it")
+    def __init__(self, model, dls, loss_func, **kwargs):
+        kwargs["cbs"] = self.default_cbs + fc.L(kwargs.get("cbs", []))
+        super().__init__(model, dls, loss_func, **kwargs)
 
     def lr_find(self, gamma=1.3, max_mult=3, start_lr=1e-5, max_epochs=10):
         self.fit(
             max_epochs,
             lr=start_lr,
             cbs=LRFinderCB(gamma, max_mult),
-            ignore_cbs=PlotCB,
+            ignore_cbs=[PlotCB],
         )
 
     def validate(self, cbs=None):
-        self.fit(1, lr=1000, train=False, valid=True, cbs=cbs, ignore_cbs=PlotCB)
+        self.fit(1, lr=1000, train=False, valid=True, cbs=cbs, ignore_cbs=[PlotCB])
 
     @fc.delegates(Learner.fit)  # type: ignore
     def fit_one_cycle(self, nepochs, **kwargs):
