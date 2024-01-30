@@ -39,9 +39,7 @@ class with_cbs:
 
 
 class Learner:
-    def __init__(
-        self, model, dls, loss_func, lr=None, cbs=None, opt_func=optim.SGD
-    ):
+    def __init__(self, model, dls, loss_func, lr=None, cbs=None, opt_func=optim.AdamW):
         self.model, self.dls, self.loss_func, self.lr, self.opt_func = (
             model,
             dls,
@@ -50,19 +48,20 @@ class Learner:
             opt_func,
         )
         self.cbs = fc.L(cbs)
+        self.ignored_cbs = []
 
     def fit(
         self,
         nepochs,
+        lr=None,
+        cbs=None,
+        ignore_cbs=None,
         train=True,
         valid=True,
-        cbs=None,
-        lr=None,
-        ignore_cbs=None,
     ):
         ## Settings for only this fit()
-        self.ignore_cbs = ignore_cbs
         self.cbs.extend(fc.L(cbs))
+        self.ignored_cbs.extend(fc.L(ignore_cbs))
 
         ## Setup
         self.train_steps = 0
@@ -72,16 +71,14 @@ class Learner:
         if lr is None:
             raise ValueError("Specify lr in either init or fit")
 
-        self.model = self.model.to(def_device)
         self.opt = self.opt_func(self.model.parameters(), lr=lr)  # type: ignore
 
         ## Fit
         try:
             self._fit(train, valid)
         finally:
-            self.ignore_cbs = None
-            for cb in fc.L(cbs):
-                self.cbs.remove(cb)
+            self.cbs = self.cbs[: -len(fc.L(cbs))]
+            self.ignored_cbs = self.ignored_cbs[: -len(fc.L(ignore_cbs))]
 
     @with_cbs("fit")
     def _fit(self, train, valid):
@@ -121,7 +118,7 @@ class Learner:
             self.zero_grad()
 
     def callback(self, method_nm):
-        run_cbs(self.cbs, method_nm, learn=self, ignored=self.ignore_cbs)
+        run_cbs(self.cbs, method_nm, learn=self, ignored=self.ignored_cbs)
 
     def __getattr__(self, name):
         if name in ("predict", "get_loss", "backward", "step", "zero_grad"):
@@ -152,7 +149,7 @@ class Learner:
                 1,
                 lr=1,
                 train=False,
-                cbs=NBatchCB(),
+                cbs=NBatchCB(1),
                 ignore_cbs=[ProgressCB, PlotCB],
             )
         print(f"Tot params: {totp}; MFLOPS: {totf:.1f}")
@@ -181,7 +178,7 @@ class Trainer(Learner):
     @fc.delegates(Learner.fit)  # type: ignore
     def fit(self, nepochs, metrics=None, **kwargs):
         # Add metrics
-        if isinstance(metrics, (list, NoneType)):
+        if not isinstance(metrics, dict):
             metrics = {cls_name(m): m for m in fc.L(metrics)}
         self.default_cbs[2].metrics.update(**metrics)
 
@@ -192,19 +189,22 @@ class Trainer(Learner):
             max_epochs,
             lr=start_lr,
             cbs=LRFinderCB(gamma, max_mult),
-            ignore_cbs=[PlotCB],
+            ignore_cbs=PlotCB,
         )
 
     def validate(self):
-        self.fit(1, train=False, valid=True, ignore_cbs=[PlotCB])
+        self.fit(1, train=False, valid=True, ignore_cbs=PlotCB)
 
     fc.delegates(Learner.fit)  # type: ignore
 
-    def fit_one_cycle(self, nepochs, max_lr, **kwargs):
-        if "lr" in kwargs:
-            raise ValueError("fit_one_cycle uses max_lr, do not set lr")
-
+    def fit_one_cycle(self, nepochs, **kwargs):
         tmax = len(self.dls.train) * nepochs
+
+        # repeated from fit, but scheduler must be passed by CB
+        max_lr = kwargs.get("lr", None) or self.lr
+        if max_lr is None:
+            raise ValueError("Specify lr in either init or fit")
+
         sched = partial(lr_scheduler.OneCycleLR, max_lr=max_lr, total_steps=tmax)
-        kwargs["cbs"] = [BatchSchedCB(sched)] + fc.L(kwargs.get("cbs", None))
+        kwargs["cbs"] = [BatchSchedCB(sched)] + kwargs.get("cbs", [])
         self.fit(nepochs, **kwargs)

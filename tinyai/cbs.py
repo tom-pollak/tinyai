@@ -59,7 +59,6 @@ class CancelEpochException(Exception):
 
 
 def run_cbs(cbs, method_nm, learn=None, ignored=None):
-    ignored = fc.L(ignored)
     for cb in sorted(cbs, key=attrgetter("order")):
         if ignored is not None and isinstance(cb, tuple(ignored)):
             continue
@@ -353,13 +352,13 @@ class LRFinderCB(Callback):
 
 ## Transforms
 class BatchTransformCB(Callback):
-    def __init__(self, tfm, train=True, val=True):
+    def __init__(self, tfm, train=True, valid=True):
         self.tfm = tfm
         self.train = train
-        self.val = val
+        self.valid = valid
 
     def before_batch(self, learn):
-        if (self.train and learn.training) or (self.val and not learn.training):
+        if (self.train and learn.training) or (self.valid and not learn.training):
             learn.batch = self.tfm(learn.batch)
 
 
