@@ -1,12 +1,13 @@
 from __future__ import annotations
 from functools import partial
+import warnings
 import fastcore.all as fc
 
 import torch
 from torch import optim
 from torch.optim import lr_scheduler
 
-from tinyai.core import cls_name
+from tinyai.core import MODEL_DIR, cls_name
 from tinyai.cbs import CancelBatchException, CancelEpochException, CancelFitException
 from tinyai.cbs import *
 from tinyai.hooks import Hooks
@@ -37,6 +38,8 @@ class with_cbs:
 
 
 class Learner:
+    model_dir = MODEL_DIR
+
     def __init__(
         self,
         model,
@@ -158,8 +161,9 @@ class Learner:
             try:
                 *_, h, w = outp.shape
             except AttributeError:
-                print("Skipping:", mod)
+                print("Skipping:", cls_name(mod))
                 return
+
             flops = sum(_flops(o, h, w) for o in mod.parameters()) / 1e6
             totf += flops
             res += f"|{cls_name(mod)}|{tuple(inp[0].shape)}|{tuple(outp.shape)}|{nparms}|{flops:.1f}|\n"
@@ -180,6 +184,20 @@ class Learner:
         else:
             print(res)
 
+    def freeze(self):
+        for p in self.model.parameters():
+            p.requires_grad_(False)
+
+    def unfreeze(self):
+        for p in self.model.parameters():
+            p.requires_grad_(True)
+
+    def save(self, fn):
+        torch.save(self.model.state_dict(), self.model_dir / fn)
+
+    def load(self, fn):
+        self.model.load_state_dict(self.model_dir / fn)
+
 
 class Trainer(Learner):
     default_cbs = [
@@ -194,6 +212,10 @@ class Trainer(Learner):
         kwargs["cbs"] = self.default_cbs + kwargs.get("cbs", [])
         super().__init__(model, dls, **kwargs)
 
+        # HACK
+        if not len(list(filter(lambda cb: cls_name(cb) == "MetricsCB", self.cbs))):
+            warnings.warn("MetricsCB is not in cbs, you probably want to add it")
+
     def lr_find(self, gamma=1.3, max_mult=3, start_lr=1e-5, max_epochs=10):
         self.fit(
             max_epochs,
@@ -204,8 +226,6 @@ class Trainer(Learner):
 
     def validate(self, cbs=None):
         self.fit(1, lr=1000, train=False, valid=True, cbs=cbs, ignore_cbs=PlotCB)
-
-    fc.delegates(Learner.fit)  # type: ignore
 
     @fc.delegates(Learner.fit)  # type: ignore
     def fit_one_cycle(self, nepochs, **kwargs):

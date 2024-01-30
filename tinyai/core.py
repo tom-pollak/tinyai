@@ -1,3 +1,4 @@
+from pathlib import Path
 import random
 from typing import Mapping, Any
 
@@ -13,6 +14,8 @@ import traceback
 import gc
 
 __all__ = [
+    "MODEL_DIR",
+    "list_models",
     "identity",
     "cls_name",
     "set_output",
@@ -25,6 +28,16 @@ __all__ = [
     "collate_device",
     "clean_mem",
 ]
+
+MODEL_DIR = Path().home() / ".cache/tinyai/models"
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def list_models():
+    return list(MODEL_DIR.glob("*.pth"))
+
+
+## UTILS
 
 
 def identity(x):
@@ -56,11 +69,18 @@ def toggle_mpl_cmap():
         mpl.rcParams["image.cmap"] = "viridis"
     print("setting cmap:", mpl.rcParams["image.cmap"])
 
+
 ##
+
 
 def get_children(model):
     children = list(model.children())
-    return [model] if len(children) == 0 else [ci for c in children for ci in get_children(c)]
+    return (
+        [model]
+        if len(children) == 0
+        else [ci for c in children for ci in get_children(c)]
+    )
+
 
 ## Device
 
