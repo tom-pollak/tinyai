@@ -2,7 +2,6 @@ from functools import partial
 from typing import Any
 
 from torch import nn
-from torch.nn import init
 
 
 from tinyai.core import identity

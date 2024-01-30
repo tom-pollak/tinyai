@@ -17,6 +17,7 @@ __all__ = [
     "cls_name",
     "set_output",
     "set_seed",
+    "toggle_mpl_cmap",
     "def_device",
     "to_device",
     "to_cpu",
@@ -45,6 +46,14 @@ def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+
+
+def toggle_mpl_cmap():
+    if mpl.rcParams["image.cmap"] == "viridis":
+        mpl.rcParams["image.cmap"] = "gray_r"
+    else:
+        mpl.rcParams["image.cmap"] = "viridis"
+    print("setting cmap:", mpl.rcParams["image.cmap"])
 
 
 ## Device

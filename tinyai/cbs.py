@@ -1,4 +1,6 @@
 from __future__ import annotations
+from copy import deepcopy
+import os
 from functools import partial
 import math
 import fastcore.all as fc
@@ -67,12 +69,15 @@ def run_cbs(cbs, method_nm, learn=None, ignored=None):
             method(learn)
 
 
-def require_cbs(cbs, required):
-    required = set(required)
-    present_cbs = {type(cb) for cb in cbs if isinstance(cb, tuple(required))}
-    missing_cbs = required - present_cbs
-    if missing_cbs:
-        raise ValueError(f"Requires callbacks: {', '.join(map(cls_name, missing_cbs))}")
+def require_cbs(cbs, required_cbs):
+    required_cbs = deepcopy(required_cbs)
+    for cb in cbs:
+        for reqcb in required_cbs:
+            if isinstance(cb, reqcb):
+                required_cbs.remove(reqcb)
+
+    if len(required_cbs):
+        raise ValueError(f"Required callback {required_cbs}")
 
 
 class Callback:
@@ -90,9 +95,22 @@ class ToDeviceCB(Callback):
         learn.batch = to_device(learn.batch)
 
 
-class TrainCB(Callback):
+class BaseTrainCB(Callback):
     order = 0
 
+    ## Running mean of epoch loss
+    def before_fit(self, learn):
+        learn.epoch_loss = Mean()
+
+    def before_epoch(self, learn):
+        learn.epoch_loss.reset()
+
+    def after_batch(self, learn):
+        x, y, *_ = to_cpu(learn.batch)
+        learn.epoch_loss.update(to_cpu(learn.loss), weight=len(x))
+
+
+class TrainCB(BaseTrainCB):
     def __init__(self, n_inp=1):
         self.n_inp = n_inp
 
@@ -115,12 +133,12 @@ class TrainCB(Callback):
 class MetricsCB(Callback):
     order = 1
     show_train = True
+    required_cbs = [BaseTrainCB]
 
     def __init__(self, *ms, **metrics):
         for o in ms:
             metrics[cls_name(o)] = o
         self.metrics = metrics
-        self.loss = Mean()
 
     def _log(self, log):
         print(log)
@@ -129,13 +147,11 @@ class MetricsCB(Callback):
         learn.metrics = self
 
     def before_epoch(self, learn):
-        self.loss.reset()
         for o in self.metrics.values():
             o.reset()
 
     def after_batch(self, learn):
         x, y, *_ = to_cpu(learn.batch)
-        self.loss.update(to_cpu(learn.loss), weight=len(x))
         for m in self.metrics.values():
             m.update(to_cpu(learn.preds), y)
 
@@ -144,7 +160,7 @@ class MetricsCB(Callback):
             log = dict(
                 epoch=learn.epoch,
                 train="train" if learn.model.training else "eval",
-                loss=f"{self.loss.compute().item():.4f}",
+                loss=f"{learn.epoch_loss.compute().item():.4f}",
             )
             log.update(
                 {k: f"{v.compute().item():.4f}" for k, v in self.metrics.items()}
@@ -196,7 +212,7 @@ class PlotCB(Callback):
 class PlotLossCB(PlotCB):
     def __init__(self):
         super().__init__()
-        self.required_cbs = [MetricsCB, ProgressCB]
+        self.required_cbs = [BaseTrainCB, ProgressCB]
 
     def before_fit(self, learn):
         require_cbs(learn.cbs, self.required_cbs)
@@ -206,12 +222,12 @@ class PlotLossCB(PlotCB):
 
     def after_batch(self, learn):
         if learn.training:  # store train
-            self.train_losses.append((learn.train_steps, learn.loss.item()))
+            self.train_losses.append((learn.train_steps, to_cpu(learn.loss)))
         super().after_batch(learn)
 
     def after_epoch(self, learn):
         if not learn.training:  # store valid
-            self.val_losses.append((learn.train_steps, learn.metrics.loss.compute()))
+            self.val_losses.append((learn.train_steps, to_cpu(learn.epoch_loss.compute())))
         super().after_epoch(learn)
 
     def _graph_data(self):
@@ -255,16 +271,17 @@ class EarlyStoppingCB(MetricsCB):
 
     def __init__(self, patience=1, metric=None):
         "metric = None uses val loss"
-        if metric is None:
-            super().__init__()
-            self.metric = self.loss
-        else:
+        if metric is not None:
             super().__init__(es_metric=metric)
             self.metric = self.metrics["es_metric"]
 
         self.init_patience = patience
         self.patience = patience
         self.best_metric = float("inf")
+
+    def before_fit(self, learn):
+        if self.metric is None:
+            self.metric = learn.epoch_loss
 
     def after_epoch(self, learn):
         if not learn.training:
@@ -320,7 +337,7 @@ class LRFinderCB(Callback):
         self.max_mult = max_mult
 
     def before_fit(self, learn):
-        self.initial_state = learn.model.state_dict().copy()
+        torch.save(learn.model, ".lr_tmp.pkl")
 
         self.sched = ExponentialLR(learn.opt, gamma=self.gamma)
         self.lrs, self.losses = [], []
@@ -343,7 +360,8 @@ class LRFinderCB(Callback):
     def cleanup_fit(self, learn):
         learn.opt.zero_grad()
         del self.sched
-        learn.model.load_state_dict(self.initial_state)
+        learn.model = torch.load(".lr_tmp.pkl")
+        os.remove(".lr_tmp.pkl")
 
         plt.plot(self.lrs, self.losses)
         plt.xscale("log")
@@ -462,18 +480,20 @@ class ActivationStats(HooksCallback):
         hook.stats[2].append(acts.abs().histc(40, 0, 10))
 
     @staticmethod
-    def get_hist(h):
-        return torch.stack(h.stats[2]).t().float().log1p()
+    def get_hist(h, lim=None):
+        if not isinstance(lim, slice):
+            lim = slice(lim)
+        return torch.stack(h.stats[2][lim]).t().float().log1p()
 
     @staticmethod
     def get_min(h):
         h1 = torch.stack(h.stats[2]).t().float()
         return h1[0] / h1.sum(0)
 
-    def color_dim(self, figsize=(11, 5)):
+    def color_dim(self, figsize=(11, 5), lim=None):
         fig, axes = get_grid(len(self), figsize=figsize)
         for ax, h in zip(axes.flat, self):
-            show_image(self.get_hist(h), ax, origin="lower")
+            show_image(self.get_hist(h, lim), ax, origin="lower")
         fig.show()
 
     def dead_chart(self, figsize=(11, 5)):
