@@ -9,6 +9,7 @@ import torch
 import torch.backends.mps
 from torch.utils.data import default_collate
 
+from IPython.core.getipython import get_ipython
 import sys
 import traceback
 import gc
@@ -16,6 +17,7 @@ import gc
 __all__ = [
     "MODEL_DIR",
     "list_models",
+    "IMAGENET_STATS",
     "identity",
     "Noop",
     "cls_name",
@@ -29,6 +31,7 @@ __all__ = [
     "to_cpu",
     "collate_device",
     "clean_mem",
+    "IN_NOTEBOOK",
 ]
 
 MODEL_DIR = Path().home() / ".cache/tinyai/models"
@@ -38,6 +41,8 @@ MODEL_DIR.mkdir(parents=True, exist_ok=True)
 def list_models():
     return list(MODEL_DIR.glob("*.pth"))
 
+
+IMAGENET_STATS = ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
 ## UTILS
 
@@ -163,3 +168,34 @@ def clean_mem():
     clean_ipython_hist()
     gc.collect()
     torch.cuda.empty_cache()
+
+
+# Cell
+def in_notebook():
+    "Check if the code is running in a jupyter notebook"
+    try:
+        shell = get_ipython().__class__.__name__
+        if shell == "ZMQInteractiveShell":  # Jupyter notebook, Spyder or qtconsole
+            import IPython
+
+            return IPython.__version__ >= "6.0.0"
+        elif shell == "TerminalInteractiveShell":
+            return False  # Terminal running IPython
+        else:
+            return False  # Other type (?)
+    except NameError:
+        return False  # Probably standard Python interpreter
+
+
+IN_NOTEBOOK = in_notebook()
+
+## PATCH FASTPROGRESS
+# from IPython.display import clear_output, DisplayHandle
+
+
+# def update_patch(self, obj):
+#     clear_output(wait=True)
+#     self.display(obj)
+
+
+# DisplayHandle.update = update_patch  # type: ignore

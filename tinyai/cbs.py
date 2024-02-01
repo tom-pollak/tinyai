@@ -6,9 +6,10 @@ import math
 import fastcore.all as fc
 from operator import attrgetter
 import matplotlib.pyplot as plt
-from fastprogress import progress_bar, master_bar
 from datetime import datetime
 import logging
+from IPython.display import display, HTML, DisplayHandle
+import pandas as pd
 
 import torch
 from torch import Tensor
@@ -19,10 +20,23 @@ from torcheval.metrics import Mean
 from accelerate import Accelerator
 
 
-from tinyai.core import cls_name, def_device, get_children, to_device, to_cpu, Noop
+from tinyai.core import (
+    IN_NOTEBOOK,
+    cls_name,
+    def_device,
+    get_children,
+    to_device,
+    to_cpu,
+    Noop,
+)
 from tinyai.hooks import Hooks
 from tinyai.nn.act import GeneralReLU
 from tinyai.viz import show_image, get_grid
+
+from tqdm import tqdm
+from tqdm.notebook import tqdm as tqdm_notebook
+
+tqdm = tqdm_notebook if IN_NOTEBOOK else tqdm
 
 
 __all__ = [
@@ -156,8 +170,19 @@ class MetricsCB(Callback):
             metrics[cls_name(o)] = o
         self.metrics = metrics
 
-    def _log(self, log):
-        print(log)
+    def _log_str(self, log):
+        first = log["epoch"] == 0 and log["train"] == "train"
+        row_df = pd.DataFrame.from_dict({k: [v] for k, v in log.items()})
+        row_str = row_df.to_string(
+            index=False,
+            justify="right",
+            formatters={col: "{: >8}".format for col in row_df.columns},
+        )
+        if not first:
+            row_str = row_str.split("\n")[1]
+        return row_str
+        # html_args = dict(index=False, header=first, notebook=IN_NOTEBOOK)
+        # display(HTML(row_df.to_html(**html_args)))  # type: ignore
 
     def before_fit(self, learn):
         learn.metrics = self
@@ -206,7 +231,10 @@ class MetricsCB(Callback):
                     )
                 else:
                     raise ValueError(f"{metric} is not compatiable")
-            self._log(log)
+
+            log = self._log_str(log)
+            print(log)
+            # learn.dl.write(log)
 
 
 class DefaultMetricsCB(MetricsCB):
@@ -235,54 +263,78 @@ class ProgressCB(Callback):
     order = MetricsCB.order + 1
 
     def before_fit(self, learn):
-        learn.epochs = self.mbar = master_bar(learn.epochs)
-        self.first = True
-        if hasattr(learn, "metrics"):
-            learn.metrics._log = self._log
-
-    def _log(self, d):
-        if self.first:
-            self.mbar.write(list(d), table=True)
-            self.first = False
-        self.mbar.write(list(d.values()), table=True)
+        learn.epochs = self.mbar = tqdm(learn.epochs, desc="Epoch", leave=True)
 
     def before_epoch(self, learn):
-        learn.dl = progress_bar(learn.dl, leave=False, parent=self.mbar)
+        dl_len = len(learn.dl)
+        if hasattr(self, "pbar"):
+            self.pbar.reset(total=dl_len)
+        else:
+            self.pbar = tqdm(total=dl_len, leave=True, desc="Batch")
 
     def after_batch(self, learn):
-        learn.dl.comment = f"{learn.loss:.3f}"
+        self.pbar.set_postfix(loss=f"{learn.loss:.3f}")
+        self.pbar.update(1)
+
+    def cleanup_fit(self, learn):
+        self.mbar.close()
+        self.pbar.close()
+        del self.pbar
 
 
 class PlotCB(Callback):
     order = ProgressCB.order + 1
 
-    def __init__(self):
+    def __init__(self, names=("train", "valid"), figsize=(6, 4)):
         super().__init__()
         self.graph_kwargs = {}
+        self.names = names
+        self.figsize = figsize
+
+    def update_graph(self, graphs, x_bounds=None, y_bounds=None):
+        if not hasattr(self, "graph_fig"):
+            self.graph_fig, self.graph_ax = plt.subplots(1, figsize=self.figsize)
+            self.graph_out = display(self.graph_ax.figure, display_id=True)  # type: ignore
+            assert isinstance(self.graph_out, DisplayHandle)
+
+        self.graph_ax.clear()
+        if len(self.names) < len(graphs):
+            self.names += [""] * (len(graphs) - len(self.names))
+        for g, n in zip(graphs, self.names):
+            self.graph_ax.plot(*g, label=n)
+        self.graph_ax.legend(loc="upper right")
+        if x_bounds is not None:
+            self.graph_ax.set_xlim(*x_bounds)
+        if y_bounds is not None:
+            self.graph_ax.set_ylim(*y_bounds)
+        self.graph_out.update(self.graph_ax.figure)
 
     def after_batch(self, learn):
         if learn.training:  # store train
-            self.mbar.update_graph(self._graph_data(), **self.graph_kwargs)  # type: ignore
+            self.update_graph(self._graph_data(), **self.graph_kwargs)  # type: ignore
 
     def after_epoch(self, learn):
         if not learn.training:  # store valid
-            self.mbar.update_graph(self._graph_data(), **self.graph_kwargs)  # type: ignore
+            self.update_graph(self._graph_data(), **self.graph_kwargs)  # type: ignore
 
     def _graph_data(self):
         return []
 
+    def after_fit(self, learn):
+        plt.close(self.graph_fig)
+
     def cleanup_fit(self, learn):
-        plt.close()
+        plt.close(self.graph_fig)
+        del self.graph_fig, self.graph_ax, self.graph_out
 
 
 class PlotLossCB(PlotCB):
     def __init__(self):
         super().__init__()
-        self.required_cbs = [BaseTrainCB, ProgressCB]
+        self.required_cbs = [BaseTrainCB]
 
     def before_fit(self, learn):
         require_cbs(learn.cbs, self.required_cbs)
-        self.mbar = learn.epochs
         self.train_losses = []
         self.val_losses = []
 
@@ -315,8 +367,6 @@ class PlotMetricsCB(PlotCB):
     def before_fit(self, learn):
         require_cbs(learn.cbs, self.required_cbs)
         self.recs = {k: [] for k in learn.metrics.metrics.keys()}
-        self.mbar = master_bar(range(learn.nepochs))
-        self.mbar.names = list(learn.metrics.metrics.keys())
         self.graph_kwargs = {"x_bounds": (0,)}
 
     def after_batch(self, learn):
@@ -453,9 +503,10 @@ class LRFinderCB(Callback):
         learn.model = torch.load(".lr_tmp.pkl")
         os.remove(".lr_tmp.pkl")
 
-        plt.plot(self.lrs, self.losses)
-        plt.xscale("log")
-        plt.show()
+        fig, ax = plt.subplots()
+        ax.plot(self.lrs, self.losses)
+        ax.set_xscale("log")
+        fig.show()
 
 
 ## Transforms
@@ -515,9 +566,9 @@ class RecorderCB(Callback):
 
     def plot(self):
         for k, v in self.recs.items():
-            plt.plot(v, label=k)
-            plt.legend()
-            plt.show()
+            fig, ax = plt.subplots()
+            ax.plot(v, label=k)
+            fig.show()
 
 
 ##
