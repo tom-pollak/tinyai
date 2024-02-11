@@ -10,6 +10,8 @@ import torch.backends.mps
 from torch.utils.data import default_collate
 
 from IPython.core.getipython import get_ipython
+from IPython.core.interactiveshell import InteractiveShell
+from IPython.core.history import HistoryManager
 import sys
 import traceback
 import gc
@@ -107,9 +109,7 @@ def match_modules(model, layers: list[str]):
 def_device = (
     "mps"
     if torch.backends.mps.is_available()
-    else "cuda"
-    if torch.cuda.is_available()
-    else "cpu"
+    else "cuda" if torch.cuda.is_available() else "cpu"
 )
 
 
@@ -140,14 +140,14 @@ def clean_ipython_hist():
     # Code in this function mainly copied from IPython source
     if not "get_ipython" in globals():
         return
-    ip = get_ipython()  # type: ignore
+    ip: InteractiveShell = get_ipython()  # type: ignore
     user_ns = ip.user_ns
     ip.displayhook.flush()
     pc = ip.displayhook.prompt_count + 1
     for n in range(1, pc):
         user_ns.pop("_i" + repr(n), None)
     user_ns.update(dict(_i="", _ii="", _iii=""))
-    hm = ip.history_manager
+    hm: HistoryManager = ip.history_manager  # type: ignore
     hm.input_hist_parsed[:] = [""] * pc
     hm.input_hist_raw[:] = [""] * pc
     hm._i = hm._ii = hm._iii = hm._i00 = ""
@@ -188,14 +188,3 @@ def in_notebook():
 
 
 IN_NOTEBOOK = in_notebook()
-
-## PATCH FASTPROGRESS
-# from IPython.display import clear_output, DisplayHandle
-
-
-# def update_patch(self, obj):
-#     clear_output(wait=True)
-#     self.display(obj)
-
-
-# DisplayHandle.update = update_patch  # type: ignore

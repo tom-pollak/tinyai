@@ -8,7 +8,7 @@ import torch
 from torch import optim
 from torch.optim import lr_scheduler
 
-from tinyai.core import MODEL_DIR, cls_name, def_device
+from tinyai.core import MODEL_DIR, cls_name, def_device, IN_NOTEBOOK
 from tinyai.cbs import CancelBatchException, CancelEpochException, CancelFitException
 from tinyai.cbs import *
 from tinyai.hooks import Hooks
@@ -63,7 +63,7 @@ class Learner:
             lr,
             opt_func,
         )
-        self.cbs = fc.L(cbs)
+        self.cbs = fc.L(cbs)[:]
 
     def fit(
         self,
@@ -175,7 +175,7 @@ class Learner:
                 ignore_cbs=[ProgressCB, PlotCB],
             )
         print(f"Tot params: {totp}; MFLOPS: {totf:.1f}")
-        if fc.IN_NOTEBOOK:
+        if IN_NOTEBOOK:
             from IPython.display import Markdown
 
             return Markdown(res)
@@ -210,16 +210,16 @@ class Learner:
 
 
 class Trainer(Learner):
-    default_cbs = [
-        DeviceCB(),
-        AccelerateCB(n_inp=1) if def_device == "cuda" else TrainCB(n_inp=1),
-        ProgressCB(),
-        PlotLossCB(),
-        DefaultMetricsCB(),  # Only called if MetricsCB is not given at fit
-    ]
-
     @fc.delegates(Learner.__init__)  # type: ignore
     def __init__(self, model, dls, loss_func, **kwargs):
+        self.default_cbs = [
+            DeviceCB(),
+            AccelerateCB(n_inp=1) if def_device == "cuda" else TrainCB(n_inp=1),
+            ProgressCB(),
+            PlotLossCB(),
+            DefaultMetricsCB(),  # Only called if MetricsCB is not given at fit
+        ]
+
         kwargs["cbs"] = self.default_cbs + fc.L(kwargs.get("cbs", []))
         super().__init__(model, dls, loss_func, **kwargs)
 
