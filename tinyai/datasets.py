@@ -11,6 +11,8 @@ __all__ = [
     "BasicDataset",
     "get_dls",
     "MultDL",
+    "LengthDataset",
+    "get_dummy_dls"
 ]
 
 
@@ -86,3 +88,20 @@ class MultDL:
         for o in self.dl:
             for i in range(self.mult):
                 yield o
+
+class LengthDataset(Dataset):
+    def __init__(self, length=1):
+        self.length = length
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        return 0, 0
+
+
+def get_dummy_dls(length=100):
+    return DataLoaders(
+        DataLoader(LengthDataset(length), batch_size=1),
+        DataLoader(LengthDataset(length=1), batch_size=1),
+    )

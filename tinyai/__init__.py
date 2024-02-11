@@ -5,4 +5,4 @@ from .hooks import *
 from .learner import *
 from .viz import *
 
-from .nn import *
+from ._nn import *

@@ -16,11 +16,12 @@ class Hook:
     def __del__(self):
         self.remove()
 
-    # def __enter__(self, *args):
-    #     return self
+    def __enter__(self, *args):
+        return self
 
-    # def __exit__(self, *args):
-    #     self.remove()
+    def __exit__(self, *args):
+        self.remove()
+
 
 class Hooks(list):
     def __init__(self, ms, f):

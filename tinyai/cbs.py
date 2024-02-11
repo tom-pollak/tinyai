@@ -10,6 +10,7 @@ from datetime import datetime
 import logging
 from IPython.display import display, HTML, DisplayHandle
 import pandas as pd
+from sympy import plot
 
 import torch
 from torch import Tensor
@@ -30,7 +31,7 @@ from tinyai.core import (
     Noop,
 )
 from tinyai.hooks import Hooks
-from tinyai.nn.act import GeneralReLU
+from tinyai._nn.act import GeneralReLU
 from tinyai.viz import show_image, get_grid
 
 from tqdm import tqdm
@@ -278,30 +279,45 @@ class ProgressCB(Callback):
 
     def cleanup_fit(self, learn):
         self.mbar.close()
-        self.pbar.close()
-        del self.pbar
+        if hasattr(self, "pbar"):
+            self.pbar.close()
+            del self.pbar
 
 
 class PlotCB(Callback):
     order = ProgressCB.order + 1
 
-    def __init__(self, names=("train", "valid"), figsize=(6, 4)):
+    def __init__(
+        self,
+        plot_every=1,
+        train=True,
+        valid=True,
+        names=("train", "valid"),
+        figsize=(6, 4),
+        graph_kwargs=None,
+        plot_kwargs=None,
+    ):
         super().__init__()
-        self.graph_kwargs = {}
+        self.graph_kwargs = graph_kwargs or {}
+        self.plot_kwargs = plot_kwargs or {}
+        self.plot_every = plot_every
+        self.train, self.valid = train, valid
         self.names = names
         self.figsize = figsize
 
-    def update_graph(self, graphs, x_bounds=None, y_bounds=None):
+    # TODO: only graph kwargs accepted are x_bounds, y_bounds
+    def update_graph(self, graphs, x_bounds=None, y_bounds=None, **plot_kwargs):
         if not hasattr(self, "graph_fig"):
             self.graph_fig, self.graph_ax = plt.subplots(1, figsize=self.figsize)
             self.graph_out = display(self.graph_ax.figure, display_id=True)  # type: ignore
             assert isinstance(self.graph_out, DisplayHandle)
+        self.graph_out: DisplayHandle
 
         self.graph_ax.clear()
         if len(self.names) < len(graphs):
             self.names += [""] * (len(graphs) - len(self.names))
         for g, n in zip(graphs, self.names):
-            self.graph_ax.plot(*g, label=n)
+            self.graph_ax.plot(*g, label=n, **plot_kwargs)
         self.graph_ax.legend(loc="upper right")
         if x_bounds is not None:
             self.graph_ax.set_xlim(*x_bounds)
@@ -310,12 +326,14 @@ class PlotCB(Callback):
         self.graph_out.update(self.graph_ax.figure)
 
     def after_batch(self, learn):
-        if learn.training:  # store train
-            self.update_graph(self._graph_data(), **self.graph_kwargs)  # type: ignore
+        if (
+            self.train and learn.training and learn.iter % self.plot_every == 0
+        ):  # store train
+            self.update_graph(self._graph_data(), **self.graph_kwargs, **self.plot_kwargs)  # type: ignore
 
     def after_epoch(self, learn):
-        if not learn.training:  # store valid
-            self.update_graph(self._graph_data(), **self.graph_kwargs)  # type: ignore
+        if self.valid and not learn.training:  # store valid
+            self.update_graph(self._graph_data(), **self.graph_kwargs, **self.plot_kwargs)  # type: ignore
 
     def _graph_data(self):
         return []
@@ -329,8 +347,16 @@ class PlotCB(Callback):
 
 
 class PlotLossCB(PlotCB):
-    def __init__(self):
-        super().__init__()
+    def __init__(
+        self, train=True, valid=True, plot_every=1, graph_kwargs=None, plot_kwargs=None
+    ):
+        super().__init__(
+            plot_every=plot_every,
+            train=train,
+            valid=valid,
+            graph_kwargs=graph_kwargs,
+            plot_kwargs=plot_kwargs,
+        )
         self.required_cbs = [BaseTrainCB]
 
     def before_fit(self, learn):
@@ -339,12 +365,12 @@ class PlotLossCB(PlotCB):
         self.val_losses = []
 
     def after_batch(self, learn):
-        if learn.training:  # store train
+        if self.train and learn.training:  # store train
             self.train_losses.append((learn.train_steps, to_cpu(learn.loss)))
         super().after_batch(learn)
 
     def after_epoch(self, learn):
-        if not learn.training:  # store valid
+        if self.valid and not learn.training:  # store valid
             self.val_losses.append(
                 (learn.train_steps, to_cpu(learn.epoch_loss.compute()))
             )
@@ -361,13 +387,12 @@ class PlotLossCB(PlotCB):
 
 class PlotMetricsCB(PlotCB):
     def __init__(self):
-        super().__init__()
+        super().__init__(graph_kwargs=dict(x_bounds=(0, None)))
         self.required_cbs = [MetricsCB]
 
     def before_fit(self, learn):
         require_cbs(learn.cbs, self.required_cbs)
         self.recs = {k: [] for k in learn.metrics.metrics.keys()}
-        self.graph_kwargs = {"x_bounds": (0,)}
 
     def after_batch(self, learn):
         pass  # override graph update
