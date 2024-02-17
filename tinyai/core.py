@@ -22,6 +22,7 @@ __all__ = [
     "IMAGENET_STATS",
     "identity",
     "Noop",
+    "noop",
     "cls_name",
     "set_output",
     "set_seed",
@@ -57,6 +58,8 @@ class Noop(torch.nn.Module):
     def forward(self, x):
         return x
 
+def noop(x):
+    Noop()(x)
 
 def cls_name(cls):
     if isinstance(cls, type):

@@ -8,9 +8,8 @@ from operator import attrgetter
 import matplotlib.pyplot as plt
 from datetime import datetime
 import logging
-from IPython.display import display, HTML, DisplayHandle
+from IPython.display import display, DisplayHandle
 import pandas as pd
-from sympy import plot
 
 import torch
 from torch import Tensor
@@ -57,7 +56,7 @@ __all__ = [
     "EarlyStoppingCB",
     "CheckpointCB",
     "NBatchCB",
-    "OverfitBatch",
+    "OverfitBatchCB",
     "LRFinderCB",
     "BatchTransformCB",
     "BaseSchedCB",
@@ -67,6 +66,7 @@ __all__ = [
     "HooksCallback",
     "ActivationStats",
     "AccelerateCB",
+    "CapturePreds",
 ]
 
 
@@ -135,13 +135,17 @@ class BaseTrainCB(Callback):
         learn.epoch_loss.reset()
 
     def after_batch(self, learn):
-        x, y, *_ = to_cpu(learn.batch)
+        x, *_ = learn.batch
         learn.epoch_loss.update(to_cpu(learn.loss), weight=len(x))
 
 
 class TrainCB(BaseTrainCB):
     def __init__(self, n_inp=1):
         self.n_inp = n_inp
+
+    def before_fit(self, learn):
+        super().before_fit(learn)
+        learn.n_inp = self.n_inp
 
     def predict(self, learn):
         learn.preds = learn.model(*learn.batch[: self.n_inp])
@@ -171,7 +175,35 @@ class MetricsCB(Callback):
             metrics[cls_name(o)] = o
         self.metrics = metrics
 
-    def _log_str(self, log):
+    def _create_log(self, learn):
+        log = dict(
+            epoch=learn.epoch,
+            train="train" if learn.model.training else "eval",
+            loss=f"{learn.epoch_loss.compute().item():.4f}",
+        )
+        for k, v in self.metrics.items():
+            metric = v.compute()
+            if isinstance(metric, Tensor):
+                if metric.numel() == 1:
+                    log.update({k: f"{metric.item():.4f}"})
+                elif metric.ndim == 1:
+                    log.update(
+                        {f"{k}_{i}": f"{o.item():.4f}" for i, o in enumerate(metric)}
+                    )
+                else:
+                    raise ValueError(f"{metric.shape} is not compatiable")
+            elif isinstance(metric, tuple):  # multi output, (tensor, tensor)
+                log.update(
+                    {
+                        f"{k}": ";".join(f"{o.item():.4f}" for o in ms)
+                        for ms in zip(*metric)
+                    }
+                )
+            else:
+                raise ValueError(f"{metric} is not compatiable")
+        return log
+
+    def _log(self, learn, log):
         first = log["epoch"] == 0 and log["train"] == "train"
         row_df = pd.DataFrame.from_dict({k: [v] for k, v in log.items()})
         row_str = row_df.to_string(
@@ -181,7 +213,7 @@ class MetricsCB(Callback):
         )
         if not first:
             row_str = row_str.split("\n")[1]
-        return row_str
+        print(row_str)
         # html_args = dict(index=False, header=first, notebook=IN_NOTEBOOK)
         # display(HTML(row_df.to_html(**html_args)))  # type: ignore
 
@@ -204,38 +236,8 @@ class MetricsCB(Callback):
 
     def after_epoch(self, learn):
         if (learn.training and self.show_train) or not learn.training:
-            log = dict(
-                epoch=learn.epoch,
-                train="train" if learn.model.training else "eval",
-                loss=f"{learn.epoch_loss.compute().item():.4f}",
-            )
-            for k, v in self.metrics.items():
-                metric = v.compute()
-                if isinstance(metric, Tensor):
-                    if metric.numel() == 1:
-                        log.update({k: f"{metric.item():.4f}"})
-                    elif metric.ndim == 1:
-                        log.update(
-                            {
-                                f"{k}_{i}": f"{o.item():.4f}"
-                                for i, o in enumerate(metric)
-                            }
-                        )
-                    else:
-                        raise ValueError(f"{metric.shape} is not compatiable")
-                elif isinstance(metric, tuple):  # multi output, (tensor, tensor)
-                    log.update(
-                        {
-                            f"{k}": ";".join(f"{o.item():.4f}" for o in ms)
-                            for ms in zip(*metric)
-                        }
-                    )
-                else:
-                    raise ValueError(f"{metric} is not compatiable")
-
-            log = self._log_str(log)
-            print(log)
-            # learn.dl.write(log)
+            log = self._create_log(learn)
+            self._log(learn, log)
 
 
 class DefaultMetricsCB(MetricsCB):
@@ -289,7 +291,7 @@ class PlotCB(Callback):
 
     def __init__(
         self,
-        plot_every=1,
+        plot_every=10,
         train=True,
         valid=True,
         names=("train", "valid"),
@@ -342,13 +344,14 @@ class PlotCB(Callback):
         plt.close(self.graph_fig)
 
     def cleanup_fit(self, learn):
-        plt.close(self.graph_fig)
-        del self.graph_fig, self.graph_ax, self.graph_out
+        if hasattr(self, "graph_fig"):
+            plt.close(self.graph_fig)
+            del self.graph_fig, self.graph_ax, self.graph_out
 
 
 class PlotLossCB(PlotCB):
     def __init__(
-        self, train=True, valid=True, plot_every=1, graph_kwargs=None, plot_kwargs=None
+        self, train=True, valid=True, plot_every=10, graph_kwargs=None, plot_kwargs=None
     ):
         super().__init__(
             plot_every=plot_every,
@@ -475,7 +478,7 @@ class NBatchCB(Callback):
             raise CancelEpochException()
 
 
-class OverfitBatch(Callback):
+class OverfitBatchCB(Callback):
     order = 100
 
     def __init__(self, nbatches=1, eval_steps=1):
@@ -647,7 +650,7 @@ class ActivationStats(HooksCallback):
     def append_stats(hook, mod, inp, outp):
         if not hasattr(hook, "stats"):
             hook.stats = ([], [], [])
-        acts = to_cpu(outp)
+        acts = to_cpu(outp).float()
         hook.stats[0].append(acts.mean())
         hook.stats[1].append(acts.std())
         hook.stats[2].append(acts.abs().histc(40, 0, 10))
@@ -752,3 +755,23 @@ class DebugTrain(Callback):
 
     def after_fit(self, learn):
         print("after_fit")
+
+
+class CapturePreds(Callback):
+    def before_fit(self, learn):
+        self.all_inps, self.all_preds, self.all_targs = [], [], []
+
+    def after_batch(self, learn):
+        if hasattr(learn, "n_inp"):
+            n_inp = learn.n_inp
+        else:
+            n_inp = 1
+
+        self.all_preds.append(to_cpu(learn.preds))
+        self.all_inps.append(to_cpu(learn.batch[:n_inp]))
+        self.all_targs.append(to_cpu(learn.batch[n_inp:]))
+
+    def after_fit(self, learn):
+        self.all_preds, self.all_targs, self.all_inps = map(
+            torch.cat, [self.all_preds, self.all_targs, self.all_inps]
+        )

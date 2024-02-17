@@ -12,6 +12,7 @@ from tinyai.core import MODEL_DIR, cls_name, def_device, IN_NOTEBOOK
 from tinyai.cbs import CancelBatchException, CancelEpochException, CancelFitException
 from tinyai.cbs import *
 from tinyai.hooks import Hooks
+from tinyai.viz import show_images
 
 __all__ = [
     "with_cbs",
@@ -216,7 +217,6 @@ class Trainer(Learner):
             DeviceCB(),
             AccelerateCB(n_inp=1) if def_device == "cuda" else TrainCB(n_inp=1),
             ProgressCB(),
-            PlotLossCB(),
             DefaultMetricsCB(),  # Only called if MetricsCB is not given at fit
         ]
 
@@ -244,5 +244,18 @@ class Trainer(Learner):
             raise ValueError("Specify lr in either init or fit")
 
         sched = partial(lr_scheduler.OneCycleLR, max_lr=max_lr, total_steps=tmax)
-        kwargs["cbs"] = [BatchSchedCB(sched)] + kwargs.get("cbs", [])
+        kwargs["cbs"] = [BatchSchedCB(sched)] + fc.L(kwargs.get("cbs", None))
         self.fit(nepochs, **kwargs)
+
+    @fc.delegates(show_images)  # type: ignore
+    def show_image_batch(self, max_n=9, cbs=None, **kwargs):
+        self.fit(1, cbs=[NBatchCB(nbatches=1)] + fc.L(cbs))
+        show_images(self.batch[0][:max_n], **kwargs)
+
+    def capture_preds(self, cbs=None, inps=False):
+        cp = CapturePreds()
+        self.validate(cbs=[cp] + fc.L(cbs))
+        res = cp.all_preds, cp.all_targs
+        if inps:
+            res = res + (cp.all_inps,)
+        return res
