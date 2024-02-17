@@ -1,11 +1,11 @@
 from functools import partial
-from typing import Any, Literal
+from typing import Any
 
 from torch import nn
 import torch.nn.functional as F
 
 
-from tinyai.core import identity
+from tinyai.core import Noop
 from tinyai._nn.act import GeneralReLU
 from tinyai._nn.init import init_params_
 
@@ -64,12 +64,12 @@ class ResBlock(nn.Module):
         if fi != fo:
             self.id_conv = conv(fi, fo, ks=1, stride=1, act=None)
         else:
-            self.id_conv = identity
+            self.id_conv = Noop()
 
         if stride != 1:
             self.pool = nn.AvgPool2d(2, ceil_mode=True)
         else:
-            self.pool = identity
+            self.pool = Noop()
 
         self.act = act()
 
