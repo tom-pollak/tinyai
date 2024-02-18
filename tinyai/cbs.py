@@ -143,10 +143,6 @@ class TrainCB(BaseTrainCB):
     def __init__(self, n_inp=1):
         self.n_inp = n_inp
 
-    def before_fit(self, learn):
-        super().before_fit(learn)
-        learn.n_inp = self.n_inp
-
     def predict(self, learn):
         learn.preds = learn.model(*learn.batch[: self.n_inp])
 
@@ -768,8 +764,8 @@ class CapturePreds(Callback):
             n_inp = 1
 
         self.all_preds.append(to_cpu(learn.preds))
-        self.all_inps.append(to_cpu(learn.batch[:n_inp]))
-        self.all_targs.append(to_cpu(learn.batch[n_inp:]))
+        self.all_inps.append(to_cpu(learn.batch[0]))
+        self.all_targs.append(to_cpu(learn.batch[1]))
 
     def after_fit(self, learn):
         self.all_preds, self.all_targs, self.all_inps = map(

@@ -43,12 +43,12 @@ class DataLoaders:
         self.train, self.valid = train_ds, valid_ds
 
     @classmethod
-    def from_dd(cls, dd, batch_size, num_workers=1, pin_memory=True):
+    def from_dd(cls, dd, batch_size, num_workers=8, pin_memory=True, **kwargs):
         f = collate_dd(dd["train"])
         return cls(
             *[
                 DataLoader(
-                    ds, batch_size=batch_size, num_workers=num_workers, collate_fn=f, pin_memory=pin_memory
+                    ds, batch_size=batch_size, collate_fn=f, num_workers=num_workers, pin_memory=pin_memory, **kwargs
                 )
                 for ds in dd.values()
             ]
