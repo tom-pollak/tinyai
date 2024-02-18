@@ -2,6 +2,7 @@ from __future__ import annotations
 from functools import partial
 import warnings
 import fastcore.all as fc
+from pathlib import Path
 from datetime import datetime
 
 import torch
@@ -40,8 +41,6 @@ class with_cbs:
 
 
 class Learner:
-    model_dir = MODEL_DIR
-
     def __init__(
         self,
         model,
@@ -50,6 +49,7 @@ class Learner:
         lr=None,
         cbs=None,
         opt_func=partial(optim.AdamW, eps=1e-5),
+        model_dir=MODEL_DIR,
     ):
         """
         AdamW eps 1e-5:
@@ -57,13 +57,15 @@ class Learner:
         don't want to divide by 0, So we add eps.
         If eps is really small, this can make the lr *huge*, so I increase it to 1e-5
         """
-        self.model, self.dls, self.loss_func, self.lr, self.opt_func = (
+        self.model, self.dls, self.loss_func, self.lr, self.opt_func, self.model_dir = (
             model,
             dls,
             loss_func,
             lr,
             opt_func,
+            Path(model_dir),
         )
+        self.model_dir.mkdir(exist_ok=True, parents=False)
         self.cbs = fc.L(cbs)[:]
 
     def fit(
@@ -207,7 +209,7 @@ class Learner:
         torch.save(self.model.state_dict(), save_file)
 
     def load(self, fn):
-        self.model.load_state_dict(self.model_dir / fn)
+        self.model.load_state_dict(torch.load(self.model_dir / fn))
 
 
 class Trainer(Learner):
