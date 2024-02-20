@@ -3,6 +3,8 @@ from operator import itemgetter
 import torchvision.transforms.functional as TF
 from torch.utils.data import DataLoader, Dataset, default_collate
 
+from tinyai.core import def_workers
+
 __all__ = [
     "inplace",
     "transformi",
@@ -12,7 +14,7 @@ __all__ = [
     "get_dls",
     "MultDL",
     "LengthDataset",
-    "get_dummy_dls"
+    "get_dummy_dls",
 ]
 
 
@@ -43,12 +45,19 @@ class DataLoaders:
         self.train, self.valid = train_ds, valid_ds
 
     @classmethod
-    def from_dd(cls, dd, batch_size, num_workers=8, pin_memory=True, **kwargs):
+    def from_dd(
+        cls, dd, batch_size, num_workers=def_workers, pin_memory=True, **kwargs
+    ):
         f = collate_dd(dd["train"])
         return cls(
             *[
                 DataLoader(
-                    ds, batch_size=batch_size, collate_fn=f, num_workers=num_workers, pin_memory=pin_memory, **kwargs
+                    ds,
+                    batch_size=batch_size,
+                    collate_fn=f,
+                    num_workers=num_workers,
+                    pin_memory=pin_memory,
+                    **kwargs
                 )
                 for ds in dd.values()
             ]
@@ -77,6 +86,7 @@ def get_dls(train_ds, valid_ds, bs, **kwargs):
         DataLoader(valid_ds, batch_size=bs * 2, **kwargs),
     )
 
+
 class MultDL:
     def __init__(self, dl, mult=2):
         self.dl, self.mult = dl, mult
@@ -88,6 +98,7 @@ class MultDL:
         for o in self.dl:
             for i in range(self.mult):
                 yield o
+
 
 class LengthDataset(Dataset):
     def __init__(self, length=1):
