@@ -1,6 +1,7 @@
 from pathlib import Path
 import random
 from typing import Mapping, Any
+import os
 
 import matplotlib as mpl
 import numpy as np
@@ -26,6 +27,8 @@ __all__ = [
     "cls_name",
     "set_output",
     "set_seed",
+    "_num_cpus",
+    "def_workers",
     "toggle_mpl_cmap",
     "match_modules",
     "get_children",
@@ -58,8 +61,10 @@ class Noop(torch.nn.Module):
     def forward(self, x):
         return x
 
+
 def noop(x):
     Noop()(x)
+
 
 def cls_name(cls):
     if isinstance(cls, type):
@@ -77,6 +82,17 @@ def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+
+
+def _num_cpus() -> int:
+    "Get number of cpus"
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        return os.cpu_count()  # type: ignore
+
+
+def_workers = _num_cpus()
 
 
 def toggle_mpl_cmap():

@@ -208,8 +208,8 @@ class Learner:
                 return
         torch.save(self.model.state_dict(), save_file)
 
-    def load(self, fn):
-        self.model.load_state_dict(torch.load(self.model_dir / fn))
+    def load(self, fn, strict=True):
+        self.model.load_state_dict(torch.load(self.model_dir / fn), strict=strict)
 
 
 class Trainer(Learner):
@@ -251,10 +251,10 @@ class Trainer(Learner):
 
     @fc.delegates(show_images)  # type: ignore
     def show_image_batch(self, max_n=9, cbs=None, **kwargs):
-        self.fit(1, cbs=[NBatchCB(nbatches=1)] + fc.L(cbs))
+        self.fit(1, lr=1000, cbs=[NBatchCB(nbatches=1)] + fc.L(cbs))
         show_images(self.batch[0][:max_n], **kwargs)
 
-    def capture_preds(self, cbs=None, inps=False):
+    def capture_preds(self, cbs=None, inps=False) -> tuple:
         cp = CapturePreds()
         self.validate(cbs=[cp] + fc.L(cbs))
         res = cp.all_preds, cp.all_targs
