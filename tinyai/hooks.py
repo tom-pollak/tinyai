@@ -5,9 +5,12 @@ __all__ = ["Hook", "Hooks"]
 
 
 class Hook:
-    def __init__(self, m, f):
+    def __init__(self, m, f, forward=True):
         self.m = m
-        self.hook = m.register_forward_hook(partial(f, self))
+        if forward:
+            self.hook = m.register_forward_hook(partial(f, self))
+        else:
+            self.hook = m.register_full_backward_hook(partial(f, self))
 
     def remove(self):
         self.m = None
@@ -24,8 +27,8 @@ class Hook:
 
 
 class Hooks(list):
-    def __init__(self, ms, f):
-        super().__init__([Hook(m, f) for m in ms])
+    def __init__(self, ms, f, forward=True):
+        super().__init__([Hook(m, f, forward) for m in ms])
 
     def __enter__(self, *args):
         return self
