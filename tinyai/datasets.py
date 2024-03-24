@@ -41,27 +41,55 @@ def collate_dd(ds):
 
 
 class DataLoaders:
-    def __init__(self, train_ds, valid_ds):
-        self.train, self.valid = train_ds, valid_ds
+    def __init__(self, train_ds, valid_ds, test_ds=None):
+        self.train, self.valid, self.test = train_ds, valid_ds, test_ds
 
     @classmethod
     def from_dd(
-        cls, dd, batch_size, num_workers=def_workers, pin_memory=True, **kwargs
+        cls,
+        dd,
+        batch_size,
+        num_workers=def_workers,
+        pin_memory=True,
+        collate_trn=None,
+        collate_tst=None,
+        sampler=None,
+        **kwargs,
     ):
-        f = collate_dd(dd["train"])
-        return cls(
-            *[
-                DataLoader(
-                    ds,
-                    batch_size=batch_size,
-                    collate_fn=f,
-                    num_workers=num_workers,
-                    pin_memory=pin_memory,
-                    **kwargs
-                )
-                for ds in dd.values()
-            ]
-        )
+        if collate_trn is None and collate_tst is None:
+            collate_trn = collate_tst = collate_dd(dd["train"])
+
+        def _create_dl(split, ds):
+            _shuffle = False
+            _sampler = None
+            _drop_last = False
+            if split == "train":
+                collate_fn = collate_trn
+                bs = batch_size
+                _drop_last = True
+                if sampler is not None:
+                    _sampler = sampler
+                else:
+                    _shuffle = True
+            elif split in {"validation", "test"}:
+                collate_fn = collate_tst
+                bs = batch_size * 2
+            else:
+                raise ValueError(f"Unknown split: {split}")
+
+            return DataLoader(
+                ds,
+                batch_size=bs,
+                collate_fn=collate_fn,
+                num_workers=num_workers,
+                pin_memory=pin_memory,
+                shuffle=_shuffle,
+                sampler=_sampler,
+                drop_last=_drop_last,
+                **kwargs,
+            )
+
+        return cls(*[_create_dl(split, ds) for split, ds in dd.items()])
 
 
 #####
