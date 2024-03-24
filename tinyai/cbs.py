@@ -9,12 +9,12 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import logging
 from IPython.display import display, DisplayHandle
-import warnings
 import pandas as pd
 
 import torch
 from torch import Tensor
 from torch import nn
+import torch.nn.functional as F
 from torch.optim.lr_scheduler import ExponentialLR
 from torch.utils.data import default_collate
 from torcheval.metrics import Mean
@@ -47,6 +47,7 @@ __all__ = [
     "run_cbs",
     "Callback",
     "DeviceCB",
+    "BaseTrainCB",
     "TrainCB",
     "MetricsCB",
     "DefaultMetricsCB",
@@ -56,6 +57,7 @@ __all__ = [
     "PlotMetricsCB",
     "EarlyStoppingCB",
     "CheckpointCB",
+    "OptunaPruningCB",
     "NBatchCB",
     "OverfitBatchCB",
     "LRFinderCB",
@@ -66,8 +68,10 @@ __all__ = [
     "RecorderCB",
     "HooksCallback",
     "ActivationStats",
+    "GradStats",
     "AccelerateCB",
     "CapturePreds",
+    "DistillTrainCB",
 ]
 
 
@@ -100,7 +104,7 @@ def require_cbs(cbs, required_cbs):
                 required_cbs.remove(reqcb)
 
     if len(required_cbs):
-        raise ValueError(f"Required callback {required_cbs}")
+        raise ValueError(f"Required callback {required_cbs}", cbs)
 
 
 def no_callbacks(cbs, no_cbs):
@@ -162,14 +166,10 @@ class TrainCB(BaseTrainCB):
 
 class MetricsCB(Callback):
     order = 50
-    sigmoid = False
-    show_train = True
-
     required_cbs = [BaseTrainCB]
 
-    def __init__(self, *ms, **metrics):
-        for o in ms:
-            metrics[cls_name(o)] = o
+    def __init__(self, sigmoid=False, show_train=True, do_log=True, **metrics):
+        self.sigmoid, self.show_train, self.do_log = sigmoid, show_train, do_log
         self.metrics = metrics
 
     def _create_log(self, learn):
@@ -201,7 +201,7 @@ class MetricsCB(Callback):
         return log
 
     def _log(self, learn, log):
-        first = log["epoch"] == 0 and log["train"] == "train"
+        first = log["epoch"] == 0 and (log["train"] == "train" or not self.show_train)
         row_df = pd.DataFrame.from_dict({k: [v] for k, v in log.items()})
         row_str = row_df.to_string(
             index=False,
@@ -232,7 +232,7 @@ class MetricsCB(Callback):
             m.update(preds, y)
 
     def after_epoch(self, learn):
-        if (learn.training and self.show_train) or not learn.training:
+        if self.do_log and (learn.training and self.show_train) or not learn.training:
             log = self._create_log(learn)
             self._log(learn, log)
 
@@ -350,6 +350,7 @@ class PlotCB(Callback):
 
 class PlotLossCB(PlotCB):
     order = PlotCB.order + 1
+
     def __init__(
         self, train=True, valid=True, plot_every=10, graph_kwargs=None, plot_kwargs=None
     ):
@@ -391,6 +392,7 @@ class PlotLossCB(PlotCB):
 
 class PlotMetricsCB(PlotCB):
     order = PlotLossCB.order + 1
+
     def __init__(self):
         super().__init__(graph_kwargs=dict(x_bounds=(0, None)))
         self.required_cbs = [MetricsCB]
@@ -445,6 +447,32 @@ class EarlyStoppingCB(MetricsCB):
                 self.best_metric = metric
 
 
+import optuna
+
+
+class OptunaPruningCB(MetricsCB):
+
+    order = 100
+
+    def __init__(self, trial, metric=None):
+        "metric = None uses val loss"
+        self.trial = trial
+        if metric is not None:
+            super().__init__(es_metric=metric)
+            self.metric = self.metrics["es_metric"]
+
+    def before_fit(self, learn):
+        if self.metric is None:
+            self.metric = learn.epoch_loss
+
+    def after_epoch(self, learn):
+        if not learn.training:
+            metric = self.metric.compute().item()
+            self.trial.report(metric, learn.epoch)
+            if self.trial.should_prune():
+                raise optuna.exceptions.TrialPruned()
+
+
 class CheckpointCB(MetricsCB):
     order = EarlyStoppingCB.order - 1
 
@@ -473,11 +501,14 @@ class CheckpointCB(MetricsCB):
 class NBatchCB(Callback):
     order = 100
 
-    def __init__(self, nbatches=1):
+    def __init__(self, nbatches=1, train=True, valid=False):
         self.nbatches = nbatches
+        self.train, self.valid = train, valid
 
     def after_batch(self, learn):
-        if learn.iter + 1 >= self.nbatches:
+        if learn.iter + 1 >= self.nbatches and (
+            (self.train and learn.training) or (self.valid and not learn.training)
+        ):
             raise CancelEpochException()
 
 
@@ -607,15 +638,22 @@ class HooksCallback(Callback):
     order = 100
 
     def __init__(
-        self, hookfunc, mod_filter=None, on_train=True, on_valid=False, mods=None
+        self,
+        hookfunc,
+        mod_filter=None,
+        on_train=True,
+        on_valid=False,
+        mods=None,
+        forward=True,
     ):
-        self.hookfunc, self.mod_filter, self.on_train, self.on_valid, self.mods = (
-            hookfunc,
-            mod_filter,
-            on_train,
-            on_valid,
-            mods,
-        )
+        (
+            self.hookfunc,
+            self.mod_filter,
+            self.on_train,
+            self.on_valid,
+            self.mods,
+            self.forward,
+        ) = (hookfunc, mod_filter, on_train, on_valid, mods, forward)
         super().__init__()
 
     def before_fit(self, learn):
@@ -625,7 +663,7 @@ class HooksCallback(Callback):
             mods = get_children(learn.model)
             if self.mod_filter:
                 mods = filter(self.mod_filter, mods)
-        self.hooks = Hooks(mods, partial(self._hookfunc, learn))
+        self.hooks = Hooks(mods, partial(self._hookfunc, learn), forward=self.forward)
 
     def _hookfunc(self, learn, *args, **kwargs):
         if (self.on_train and learn.training) or (self.on_valid and not learn.training):
@@ -639,6 +677,45 @@ class HooksCallback(Callback):
 
     def __len__(self):
         return len(self.hooks)
+
+
+class GradStats(HooksCallback):
+    act_filter = lambda m: isinstance(m, (nn.Linear, nn.Conv2d, nn.Conv1d))
+
+    def __init__(self, mod_filter=act_filter):
+        super().__init__(
+            self.append_grad_stats,
+            mod_filter,
+            on_train=True,
+            on_valid=False,
+            forward=False,
+        )
+
+    @staticmethod
+    def append_grad_stats(hook, mod, grad_inps, grad_outps):
+        if not hasattr(hook, "grad_stats"):
+            hook.grad_stats = ([], [])
+
+        inp_norm = torch.stack([g.norm(p=2) for g in grad_inps]).norm(p=2).cpu()
+        outp_norm = torch.stack([g.norm(p=2) for g in grad_outps]).norm(p=2).cpu()
+        hook.grad_stats[0].append(inp_norm)
+        hook.grad_stats[1].append(outp_norm)
+
+    def plot_stats(self, figsize=(10, 4), lim=None):
+        fig, axs = plt.subplots(1, 2, figsize=figsize)
+        if not isinstance(lim, slice):
+            lim = slice(lim)
+        for h in self:
+            for i in 0, 1:
+                axs[i].plot(h.grad_stats[i][lim])
+
+        axs[0].set_title("Input Grad Norm")
+        axs[1].set_title("Output Grad Norm")
+        fig.legend(fc.L.range(self))
+        fig.show()
+
+    def plot_all(self, lim=None):
+        self.plot_stats(lim=lim)
 
 
 class ActivationStats(HooksCallback):
@@ -691,6 +768,7 @@ class ActivationStats(HooksCallback):
         for h in self:
             for i in 0, 1:
                 axs[i].plot(h.stats[i][lim])
+
         axs[0].set_title("Means")
         axs[1].set_title("Stdevs")
         fig.legend(fc.L.range(self))
@@ -778,3 +856,28 @@ class CapturePreds(Callback):
         self.all_preds, self.all_targs, self.all_inps = map(
             torch.cat, [self.all_preds, self.all_targs, self.all_inps]
         )
+
+
+# ---
+
+
+class DistillTrainCB(TrainCB):
+    def __init__(self, teacher_model, temperature=2.0, alpha=0.5):
+        super().__init__(n_inp=1)
+        self.teacher_model = teacher_model
+        self.loss_func = nn.KLDivLoss(reduction="batchmean")
+        self.temperature, self.alpha = temperature, alpha
+
+    def predict(self, learn):
+        super().predict(learn)  # compute learn.preds
+        with torch.inference_mode():
+            self.teacher_preds = self.teacher_model(*learn.batch[: self.n_inp])
+
+    def get_loss(self, learn):
+        super().get_loss(learn)  # compute learn.loss
+
+        loss_kd = self.temperature**2 * self.loss_func(
+            F.log_softmax(learn.preds / self.temperature, dim=-1),
+            F.softmax(self.teacher_preds / self.temperature, dim=-1),
+        )
+        learn.loss = self.alpha * learn.loss + (1.0 - self.alpha) * loss_kd
