@@ -4,8 +4,9 @@ from itertools import zip_longest
 import fastcore.all as fc
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 
-__all__ = ["show_image", "subplots", "get_grid", "show_images"]
+__all__ = ["show_image", "subplots", "get_grid", "show_images", "plot_hist", "plot_confusion_matrix"]
 
 
 @fc.delegates(plt.Axes.imshow)  # type: ignore
@@ -92,3 +93,30 @@ def show_images(
     axs = get_grid(len(ims), nrows, ncols, **kwargs)[1].flat
     for im, t, ax in zip_longest(ims, titles or [], axs):
         show_image(im, ax=ax, title=t)
+    plt.tight_layout()
+
+
+def plot_hist(x, ax=None, range=None):
+    hist, bins = torch.histogram(x, range=range)
+    bin_widths = bins[1:] - bins[:-1]
+    bin_centers = bins[:-1] + bin_widths / 2
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 3))
+
+    ax.bar(bin_centers, hist, width=bin_widths, align="center")
+    ax.set_ylabel("Frequency")
+
+
+import matplotlib.pyplot as plt
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
+
+
+def plot_confusion_matrix(y_preds, y_true, labels=None):
+    cm = confusion_matrix(y_true, y_preds, normalize="true")
+    fig, ax = plt.subplots(figsize=(12, 12))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
+    disp.plot(cmap="Blues", ax=ax, values_format=".2f", colorbar=False)
+    plt.title("Normalized Confusion Matrix")
+    ax.tick_params(axis="x", labelrotation=90)
+
