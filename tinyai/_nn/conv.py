@@ -104,7 +104,9 @@ class ConvLayer(nn.Module):
             groups=groups,
         )
         if IN:
-            self.bn = nn.InstanceNorm2d(out_channels, affine=True)
+            self.bn = nn.InstanceNorm2d(
+                out_channels, affine=True, track_running_stats=True
+            )
         else:
             self.bn = nn.BatchNorm2d(out_channels)
         init_params_(self.modules())
@@ -217,9 +219,15 @@ class LightConvStream(nn.Module):
             depth
         )
         layers = []
-        layers += [LightConv3x3(in_channels, out_channels, stride=stride, dropout_p=dropout_p)]
+        layers += [
+            LightConv3x3(in_channels, out_channels, stride=stride, dropout_p=dropout_p)
+        ]
         for _ in range(depth - 1):
-            layers += [LightConv3x3(out_channels, out_channels, stride=stride, dropout_p=dropout_p)]
+            layers += [
+                LightConv3x3(
+                    out_channels, out_channels, stride=stride, dropout_p=dropout_p
+                )
+            ]
         self.layers = nn.Sequential(*layers)
 
     def forward(self, x):

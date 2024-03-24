@@ -1,9 +1,11 @@
 from __future__ import annotations
 from functools import partial
+from typing import Literal
 import warnings
 import fastcore.all as fc
 from pathlib import Path
 from datetime import datetime
+import numpy as np
 
 import torch
 from torch import optim
@@ -13,7 +15,7 @@ from tinyai.core import MODEL_DIR, cls_name, def_device, IN_NOTEBOOK
 from tinyai.cbs import CancelBatchException, CancelEpochException, CancelFitException
 from tinyai.cbs import *
 from tinyai.hooks import Hooks
-from tinyai.viz import show_images
+from tinyai.viz import show_images, plot_confusion_matrix
 
 __all__ = [
     "with_cbs",
@@ -32,7 +34,7 @@ class with_cbs:
                 o.callback(f"before_{self.nm}")
                 f(o, *args, **kwargs)
                 o.callback(f"after_{self.nm}")
-            except globals()[f"Cancel{self.nm.title()}Exception"]:
+            except (CancelFitException, CancelEpochException, CancelBatchException):
                 pass
             finally:
                 o.callback(f"cleanup_{self.nm}")
@@ -46,6 +48,7 @@ class Learner:
         model,
         dls,
         loss_func,
+        dd=None,
         lr=None,
         cbs=None,
         opt_func=partial(optim.AdamW, eps=1e-5),
@@ -57,10 +60,19 @@ class Learner:
         don't want to divide by 0, So we add eps.
         If eps is really small, this can make the lr *huge*, so I increase it to 1e-5
         """
-        self.model, self.dls, self.loss_func, self.lr, self.opt_func, self.model_dir = (
+        (
+            self.model,
+            self.dls,
+            self.loss_func,
+            self.dd,
+            self.lr,
+            self.opt_func,
+            self.model_dir,
+        ) = (
             model,
             dls,
             loss_func,
+            dd,
             lr,
             opt_func,
             Path(model_dir),
@@ -76,6 +88,7 @@ class Learner:
         ignore_cbs=None,
         train=True,
         valid=True,
+        test=False,
     ):
         ## Settings for only this fit()
         new_cbs = fc.L(cbs)
@@ -94,23 +107,30 @@ class Learner:
 
         ## Fit
         try:
-            self._fit(train, valid)
+            self._fit(train, valid, test)
         finally:
             if len(new_cbs):
                 self.cbs = self.cbs[: -len(new_cbs)]
             self.ignore_cbs = None
 
     @with_cbs("fit")
-    def _fit(self, train, valid):
+    def _fit(self, train, valid, test):
         for self.epoch in self.epochs:
             if train:
                 self.one_epoch(training=True)
             if valid:
                 torch.no_grad()(self.one_epoch)(training=False)
+            if test:
+                torch.no_grad()(self.one_epoch)(training=False, test=True)
 
-    def one_epoch(self, training: bool):
+    def one_epoch(self, training: bool, test: bool = False):
         self.model.train(training)
-        self.dl = self.dls.train if training else self.dls.valid  # type: ignore
+
+        if test:
+            self.dl = self.dls.test
+        else:
+            self.dl = self.dls.train if training else self.dls.valid
+
         self._one_epoch()
 
     @property
@@ -215,14 +235,22 @@ class Learner:
 class Trainer(Learner):
     @fc.delegates(Learner.__init__)  # type: ignore
     def __init__(self, model, dls, loss_func, **kwargs):
-        self.default_cbs = [
+        # Default CBs
+        default_cbs = [
             DeviceCB(),
             AccelerateCB(n_inp=1) if def_device == "cuda" else TrainCB(n_inp=1),
             ProgressCB(),
             DefaultMetricsCB(),  # Only called if MetricsCB is not given at fit
         ]
+        kw_def_cbs = kwargs.pop("default_cbs", None)
+        if kw_def_cbs is not None:
+            self.default_cbs = kw_def_cbs
+        else:
+            self.default_cbs = default_cbs
 
+        # Extra CBs
         kwargs["cbs"] = self.default_cbs + fc.L(kwargs.get("cbs", []))
+
         super().__init__(model, dls, loss_func, **kwargs)
 
     def lr_find(self, gamma=1.3, max_mult=3, start_lr=1e-5, max_epochs=10):
@@ -235,6 +263,17 @@ class Trainer(Learner):
 
     def validate(self, cbs=None):
         self.fit(1, lr=1000, train=False, valid=True, cbs=cbs, ignore_cbs=[PlotCB])
+
+    def test(self, cbs=None):
+        self.fit(
+            1,
+            lr=1000,
+            train=False,
+            valid=False,
+            test=True,
+            cbs=cbs,
+            ignore_cbs=[PlotCB],
+        )
 
     @fc.delegates(Learner.fit)  # type: ignore
     def fit_one_cycle(self, nepochs, **kwargs):
@@ -254,10 +293,72 @@ class Trainer(Learner):
         self.fit(1, lr=1000, cbs=[NBatchCB(nbatches=1)] + fc.L(cbs))
         show_images(self.batch[0][:max_n], **kwargs)
 
-    def capture_preds(self, cbs=None, inps=False) -> tuple:
+    def capture_preds(
+        self, split: Literal["train", "valid", "test"] = "valid", cbs=None, inps=False
+    ) -> tuple:
         cp = CapturePreds()
-        self.validate(cbs=[cp] + fc.L(cbs))
+        trn, val, tst = split == "train", split == "valid", split == "test"
+        self.fit(
+            1,
+            lr=1000,
+            train=trn,
+            valid=val,
+            test=tst,
+            cbs=[cp] + fc.L(cbs),
+            ignore_cbs=[PlotCB],
+        )
         res = cp.all_preds, cp.all_targs
         if inps:
             res = res + (cp.all_inps,)
         return res
+
+    def confusion_matrix(self, labels=None, split="valid"):
+        preds, actuals = self.capture_preds(split)
+        preds_max = preds.argmax(dim=1)
+        plot_confusion_matrix(preds_max, actuals, labels)
+
+    def show_preds(self, i2o, split="valid", delim="\n"):
+        preds, actuals = self.capture_preds(split)
+        pred_labels = i2o(preds.argmax(dim=1))
+        true_labels = i2o(actuals)
+
+        dl = getattr(self.dls, split)
+        ims, *_ = next(iter(dl))
+
+        show_images(
+            ims,
+            titles=[f"{p}{delim}{a}" for p, a in zip(pred_labels, true_labels)],
+            suptitle="Pred/Actual",
+        )
+
+    def most_confused(self, i2o, nims=32, split="valid", im_key="pixel_values"):
+        assert self.dd is not None, "dataset dict must be set for this func"
+
+        preds, actuals = self.capture_preds(split=split)
+        preds_max = preds.argmax(dim=1)
+
+        orig_reduction = self.loss_func.reduction
+        self.loss_func.reduction = "none"
+        losses = self.loss_func(preds, actuals)
+        self.loss_func.reduction = orig_reduction
+
+        highest_loss_idxs = np.argsort(losses)[-nims:]
+        ims, preds_labels, actuals_labels, max_losses = (
+            self.dd[split][highest_loss_idxs][im_key],
+            i2o(preds_max[highest_loss_idxs]),
+            i2o(actuals[highest_loss_idxs]),
+            losses[highest_loss_idxs],
+        )
+
+        show_images(
+            ims,
+            titles=[
+                f"pred: {pl}\nactual: {al}\nloss: {loss:.2f}"
+                for pl, al, loss in zip(
+                    preds_labels,
+                    actuals_labels,
+                    max_losses,
+                )
+            ],
+            suptitle="Most confused",
+        )
