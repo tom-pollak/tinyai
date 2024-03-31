@@ -44,10 +44,10 @@ class DataLoaders:
     def __init__(self, train_ds, valid_ds, test_ds=None):
         self.train, self.valid, self.test = train_ds, valid_ds, test_ds
 
-    @classmethod
-    def from_dd(
-        cls,
-        dd,
+    @staticmethod
+    def _create_dl(
+        split,
+        ds,
         batch_size,
         num_workers=def_workers,
         pin_memory=True,
@@ -56,40 +56,75 @@ class DataLoaders:
         sampler=None,
         **kwargs,
     ):
-        if collate_trn is None and collate_tst is None:
-            collate_trn = collate_tst = collate_dd(dd["train"])
-
-        def _create_dl(split, ds):
-            _shuffle = False
-            _sampler = None
-            _drop_last = False
-            if split == "train":
-                collate_fn = collate_trn
-                bs = batch_size
-                _drop_last = True
-                if sampler is not None:
-                    _sampler = sampler
-                else:
-                    _shuffle = True
-            elif split in {"validation", "test"}:
-                collate_fn = collate_tst
-                bs = batch_size * 2
+        _shuffle = False
+        _sampler = None
+        _drop_last = False
+        if split == "train":
+            collate_fn = collate_trn
+            bs = batch_size
+            _drop_last = True
+            if sampler is not None:
+                _sampler = sampler
             else:
-                raise ValueError(f"Unknown split: {split}")
+                _shuffle = True
+        elif split in {"validation", "test"}:
+            collate_fn = collate_tst
+            bs = batch_size * 2
+        else:
+            raise ValueError(f"Unknown split: {split}")
 
-            return DataLoader(
-                ds,
-                batch_size=bs,
-                collate_fn=collate_fn,
-                num_workers=num_workers,
-                pin_memory=pin_memory,
-                shuffle=_shuffle,
-                sampler=_sampler,
-                drop_last=_drop_last,
-                **kwargs,
-            )
+        return DataLoader(
+            ds,
+            batch_size=bs,
+            collate_fn=collate_fn,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            shuffle=_shuffle,
+            sampler=_sampler,
+            drop_last=_drop_last,
+            **kwargs,
+        )
 
-        return cls(*[_create_dl(split, ds) for split, ds in dd.items()])
+    @classmethod
+    def from_dss(
+        cls,
+        *dss,
+        batch_size,
+        **kwargs,
+    ):
+        return cls(
+            *[
+                cls._create_dl(split, ds, batch_size=batch_size, **kwargs)
+                for ds, split in zip(dss, ("train", "validation", "test"))
+            ]
+        )
+
+    @classmethod
+    def from_dd(
+        cls,
+        dd,
+        batch_size,
+        **kwargs,
+    ):
+        collate_trn, collate_tst = kwargs.pop("collate_trn", None), kwargs.pop(
+            "collate_tst", None
+        )
+        if collate_trn is None and collate_tst is None:
+            collate_trn = collate_tst = collate_dd(list(dd.keys())[0])
+
+        return cls(
+            *[
+                cls._create_dl(
+                    split,
+                    ds,
+                    batch_size=batch_size,
+                    collate_trn=collate_trn,
+                    collate_tst=collate_tst,
+                    **kwargs,
+                )
+                for split, ds in dd.items()
+            ]
+        )
 
 
 #####
