@@ -352,7 +352,12 @@ class PlotLossCB(PlotCB):
     order = PlotCB.order + 1
 
     def __init__(
-        self, train=True, valid=True, plot_every=10, graph_kwargs=None, plot_kwargs=None
+        self,
+        train=True,
+        valid=True,
+        plot_every: int = float("inf"),
+        graph_kwargs=None,
+        plot_kwargs=None,
     ):
         super().__init__(
             plot_every=plot_every,
