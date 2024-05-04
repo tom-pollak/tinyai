@@ -232,7 +232,7 @@ class MetricsCB(Callback):
             m.update(preds, y)
 
     def after_epoch(self, learn):
-        if self.do_log and (learn.training and self.show_train) or not learn.training:
+        if self.do_log and (learn.training and self.show_train) or self.do_log and not learn.training:
             log = self._create_log(learn)
             self._log(learn, log)
 
